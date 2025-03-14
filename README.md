@@ -49,7 +49,7 @@ $response = OpenAI::requestOpenAI(
 
 echo $response['choices'][0]['message']['content'];
 ```
-Alternativcely you can use a simple way:
+Alternatively you can use a simple way:
 ```php
 $response = OpenAI::completion([
     'messages' => [
