@@ -49,6 +49,22 @@ $response = OpenAI::requestOpenAI(
 
 echo $response['choices'][0]['message']['content'];
 ```
+Alternativcely you can use a simple way:
+```php
+$response = OpenAI::completion([
+    'messages' => [
+        ['role' => 'user', 'content' => 'Write a short story about AI.']
+    ]
+]);
+```
+Or use more paramters
+```php
+$response = OpenAI::completion([
+    'messages' => [
+        ['role' => 'user', 'content' => 'Tell me a joke.']
+    ]
+], model: 'gpt-4o', temperature: 0.9, maxTokens: 200);
+```
 
 ### 2️⃣ Using an OpenAI Assistant
 ```php
@@ -57,6 +73,24 @@ $response = OpenAI::requestOpenAI(
     assistantId: 'asst_12345' // Your Assistant ID
 );
 ```
+Or simpler
+```php
+$response = OpenAI::assistant(
+    'asst_123456789',
+    [['role' => 'user', 'content' => 'Summarize this document.']]
+);
+```
+With more parameters
+```php
+$response = OpenAI::assistant(
+    'asst_123456789',
+    [['role' => 'user', 'content' => 'Give me a detailed analysis.']],
+    temperature: 0.8,
+    maxTokens: 500
+);
+
+```
+
 
 ### 3️⃣ Sending an Image for Analysis
 ```php
