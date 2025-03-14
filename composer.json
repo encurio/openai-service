@@ -1,0 +1,28 @@
+{
+    "name": "encurio/openai-service",
+    "description": "A flexible OpenAI integration for Laravel",
+    "type": "library",
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "Encurio\\OpenAIService\\": "src/"
+        }
+    },
+    "require": {
+        "php": "^8.0",
+        "illuminate/support": "^11.0",
+        "guzzlehttp/guzzle": "^7.0"
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Encurio\\OpenAIService\\Providers\\OpenAIServiceProvider"
+            ],
+            "aliases": {
+                "OpenAI": "Encurio\\OpenAIService\\Facades\\OpenAI"
+            }
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
