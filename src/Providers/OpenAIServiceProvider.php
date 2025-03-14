@@ -18,6 +18,6 @@ class OpenAIServiceProvider extends ServiceProvider
     {
         $this->publishes([
             __DIR__.'/../config/openai.php' => config_path('openai.php'),
-        ]);
+        ], 'openai-config');
     }
 }
