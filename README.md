@@ -29,18 +29,6 @@ Ensure your `.env` file includes:
 OPENAI_API_KEY_COMPLETIONS=your_openai_completions_key
 OPENAI_API_KEY_ASSISTANTS=your_openai_assistants_key
 ```
-```
-php artisan vendor:publish --tag=openai-config
-```
-Check config/services.php
-```
-'openai' => [
-'api_key_completions' => env('OPENAI_API_KEY_COMPLETIONS', ''),
-'api_key_assistants' => env('OPENAI_API_KEY_ASSISTANTS', ''),
-],
-```
-
-
 ### 2️⃣ Publish Config File (Optional)
 ```bash
 php artisan vendor:publish --tag=openai-config
@@ -48,7 +36,6 @@ php artisan vendor:publish --tag=openai-config
 This will generate `config/openai.php`, where you can set defaults.
 
 ---
-
 ## 🛠️ Usage Examples
 
 ### 1️⃣ Basic Completion Request (Text Generation)
