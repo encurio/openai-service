@@ -1,0 +1,34 @@
+name: Run Tests
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set Up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer, phpunit
+
+      - name: Install Dependencies
+        run: composer install --no-progress --no-suggest --prefer-dist
+
+      - name: Set Up Environment
+        run: |
+          cp .env.example .env
+          echo "OPENAI_API_KEY_COMPLETIONS=${{ secrets.OPENAI_API_KEY_COMPLETIONS }}" >> .env
+          echo "OPENAI_API_KEY_ASSISTANTS=${{ secrets.OPENAI_API_KEY_ASSISTANTS }}" >> .env
+
+      - name: Run Feature Tests
+        run: php artisan test --testsuite=Feature
