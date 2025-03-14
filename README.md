@@ -23,11 +23,23 @@ composer require encurio/openai-service
 
 ## ⚙️ Configuration
 
-### 1️⃣ Set API Key in `.env`
-Add your OpenAI API key:
+### 1️⃣ Set OpenAI API Keys in `.env`
+Ensure your `.env` file includes:
 ```env
-OPENAI_API_KEY=your_openai_api_key
+OPENAI_API_KEY_COMPLETIONS=your_openai_completions_key
+OPENAI_API_KEY_ASSISTANTS=your_openai_assistants_key
 ```
+```
+php artisan vendor:publish --tag=openai-config
+```
+Check config/services.php
+```
+'openai' => [
+'api_key_completions' => env('OPENAI_API_KEY_COMPLETIONS', ''),
+'api_key_assistants' => env('OPENAI_API_KEY_ASSISTANTS', ''),
+],
+```
+
 
 ### 2️⃣ Publish Config File (Optional)
 ```bash
@@ -93,16 +105,6 @@ echo $response['choices'][0]['message']['content'];
 | `retries`      | `int`     | `3`          | Number of retry attempts if the request fails. |
 
 ---
-
-## ✅ Running Tests
-To run unit tests:
-```bash
-php artisan test
-```
-Make sure your **OpenAI API Key** is set in **GitHub Secrets** for CI/CD.
-
----
-
 ## 📄 License
 This package is licensed under the MIT License.
 
