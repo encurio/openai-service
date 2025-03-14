@@ -10,17 +10,22 @@ use Exception;
 
 class OpenAIService
 {
-    private string $apiKey;
+    private string $apiKeyCompletions;
+    private string $apiKeyAssistants;
+
     private string $baseUrlCompletions;
     private string $baseUrlAssistants;
     private int $timeout;
 
-    public function __construct(?string $apiKey = null)
+    public function __construct()
     {
-        $this->apiKey = $apiKey ?? config('services.openai.api_key');
         $this->baseUrlCompletions = 'https://api.openai.com/v1/chat/completions';
         $this->baseUrlAssistants = 'https://api.openai.com/v1/assistants';
         $this->timeout = 60;
+
+        // ✅ Load API keys from config/services.php
+        $this->apiKeyCompletions = config('services.openai.api_key_completions', '');
+        $this->apiKeyAssistants = config('services.openai.api_key_assistants', '');
     }
 
     public function requestOpenAI(
@@ -34,7 +39,15 @@ class OpenAIService
         ?string $apiKey = null,
         int $retries = 3
     ): ?array {
-        $apiKey = $apiKey ?? $this->apiKey;
+        // ✅ Select the correct API key
+        $apiKey = $apiKey
+            ?? ($useAssistant ? $this->apiKeyAssistants : $this->apiKeyCompletions);
+
+        // 🔥 Ensure API key exists before making the request
+        if (empty($apiKey)) {
+            throw new \Exception("❌ Missing OpenAI API Key. Set it in .env or pass it explicitly.");
+        }
+
         $url = $useAssistant
             ? "{$this->baseUrlAssistants}/$assistantId/threads"
             : $this->baseUrlCompletions;
@@ -68,9 +81,9 @@ class OpenAIService
                     return $response->json();
                 }
 
-                Log::error("OpenAI API Error", ['response' => $response->body()]);
+                Log::error("❌ OpenAI API Error", ['response' => $response->body()]);
             } catch (Exception $e) {
-                Log::error("OpenAI API Timeout/Error", ['message' => $e->getMessage()]);
+                Log::error("⚠️ OpenAI API Timeout/Error", ['message' => $e->getMessage()]);
                 sleep(2);
             }
         }
