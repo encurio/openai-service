@@ -1,127 +1,150 @@
 <?php
 
-namespace Encurio\OpenAIService\Services;
+namespace App\Services;
 
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Exception;
 
 class OpenAIService
 {
-    private string $apiKeyCompletions;
-    private string $apiKeyAssistants;
-
-    private string $baseUrlCompletions;
-    private string $baseUrlAssistants;
-    private int $timeout;
-
-    public function __construct()
-    {
-        $this->baseUrlCompletions = 'https://api.openai.com/v1/chat/completions';
-        $this->baseUrlAssistants = 'https://api.openai.com/v1/assistants';
-        $this->timeout = 60;
-
-        // ✅ Load API keys from config/services.php
-        $this->apiKeyCompletions = config('services.openai.api_key_completions', '');
-        $this->apiKeyAssistants = config('services.openai.api_key_assistants', '');
-    }
-
-    public function requestOpenAI(
-        array $messages,
-        bool $useAssistant = false,
-        ?string $assistantId = null,
-        ?string $model = null,
-        ?float $temperature = 0.7,
-        ?int $maxTokens = 1000,
-        ?float $topP = 1.0,
-        ?string $apiKey = null,
-        int $retries = 3
-    ): ?array {
-        // ✅ Select the correct API key
-        $apiKey = $apiKey
-            ?? ($useAssistant ? $this->apiKeyAssistants : $this->apiKeyCompletions);
-
-        // 🔥 Ensure API key exists before making the request
-        if (empty($apiKey)) {
-            throw new \Exception("❌ Missing OpenAI API Key. Set it in .env or pass it explicitly.");
-        }
-
-        $url = $useAssistant
-            ? "{$this->baseUrlAssistants}/$assistantId/threads"
-            : $this->baseUrlCompletions;
-
-        $payload = [
-            'messages' => $messages,
-            'temperature' => $temperature,
-            'max_tokens' => $maxTokens,
-            'top_p' => $topP,
-        ];
-
-        if (!$useAssistant || $model) {
-            $payload['model'] = $model ?? 'gpt-4o-mini';
-        }
-
-        return $this->sendRequest($apiKey, $url, $payload, $retries);
-    }
-
-    private function sendRequest(string $apiKey, string $url, array $payload, int $retries): ?array
-    {
-        for ($i = 0; $i < $retries; $i++) {
-            try {
-                $response = Http::timeout($this->timeout)
-                    ->withHeaders([
-                        'Authorization' => "Bearer $apiKey",
-                        'Content-Type' => 'application/json',
-                    ])
-                    ->post($url, $payload);
-
-                if ($response->successful()) {
-                    return $response->json();
-                }
-
-                Log::error("❌ OpenAI API Error", ['response' => $response->body()]);
-            } catch (Exception $e) {
-                Log::error("⚠️ OpenAI API Timeout/Error", ['message' => $e->getMessage()]);
-                sleep(2);
-            }
-        }
-
-        return null;
-    }
-
-    public function completion(
-        array $messages,
-        ?string $model = null,
-        ?float $temperature = 0.7,
-        ?int $maxTokens = 1000,
-        ?float $topP = 1.0
-    ): ?array {
-        return $this->requestOpenAI(
-            messages: $messages,
-            model: $model ?? 'gpt-4o-mini',
-            temperature: $temperature,
-            maxTokens: $maxTokens,
-            topP: $topP,
-            useAssistant: false
-        );
-    }
-
-    public function assistant(
+    public function assistants(
         string $assistantId,
         array $messages,
-        ?float $temperature = 0.7,
-        ?int $maxTokens = 1000,
-        ?float $topP = 1.0
+        array $tools = [],
+        array $toolHandlers = [],
+        ?string $model = 'gpt-4o'
     ): ?array {
-        return $this->requestOpenAI(
-            messages: $messages,
-            useAssistant: true,
-            assistantId: $assistantId,
-            temperature: $temperature,
-            maxTokens: $maxTokens,
-            topP: $topP
-        );
+        if (!empty($tools)) {
+            return $this->runAssistantWithTools(
+                assistantId: $assistantId,
+                messages: $messages,
+                tools: $tools,
+                toolHandlers: $toolHandlers,
+                model: $model
+            );
+        }
+
+        // Legacy fallback
+        return $this->requestOpenAI([
+            'assistant_id' => $assistantId,
+            'messages' => $messages,
+            'model' => $model,
+            'type' => 'assistant',
+        ]);
     }
 
-}
+    public function runAssistantWithTools(
+        string $assistantId,
+        array $messages,
+        array $tools = [],
+        array $toolHandlers = [],
+        ?string $model = 'gpt-4o'
+    ): ?array {
+        $threadId = $this->createThread();
+        if (!$threadId) return null;
 
+        $this->appendMessageToThread($threadId, $messages);
+        $runId = $this->startRun($threadId, $assistantId, $model, $tools);
+        if (!$runId) return null;
+
+        $this->processToolCalls($threadId, $runId, $toolHandlers);
+
+        return $this->getThreadMessages($threadId);
+    }
+
+    private function createThread(): ?string
+    {
+        $response = Http::withToken(config('services.openai.secret'))
+            ->post('https://api.openai.com/v1/threads', [])->json();
+
+        return $response['id'] ?? null;
+    }
+
+    private function appendMessageToThread(string $threadId, array $messages): void
+    {
+        Http::withToken(config('services.openai.secret'))
+            ->post("https://api.openai.com/v1/threads/{$threadId}/messages", [
+                'role' => 'user',
+                'content' => implode("\n", array_column($messages, 'content')),
+            ]);
+    }
+
+    private function startRun(string $threadId, string $assistantId, string $model, array $tools): ?string
+    {
+        $response = Http::withToken(config('services.openai.secret'))
+            ->post("https://api.openai.com/v1/threads/{$threadId}/runs", [
+                'assistant_id' => $assistantId,
+                'model' => $model,
+                'tools' => $tools,
+                'tool_choice' => 'auto',
+                'response_format' => 'json',
+            ])->json();
+
+        return $response['id'] ?? null;
+    }
+
+    private function processToolCalls(string $threadId, string $runId, array $toolHandlers): void
+    {
+        do {
+            sleep(2);
+            $status = Http::withToken(config('services.openai.secret'))
+                ->get("https://api.openai.com/v1/threads/{$threadId}/runs/{$runId}")
+                ->json();
+
+            if ($status['status'] === 'requires_action' && isset($status['required_action']['submit_tool_outputs'])) {
+                $outputs = [];
+
+                foreach ($status['required_action']['submit_tool_outputs']['tool_calls'] as $toolCall) {
+                    $name = $toolCall['function']['name'];
+                    $args = json_decode($toolCall['function']['arguments'], true);
+
+                    if (isset($toolHandlers[$name]) && is_callable($toolHandlers[$name])) {
+                        $outputs[] = [
+                            'tool_call_id' => $toolCall['id'],
+                            'output' => call_user_func($toolHandlers[$name], $args),
+                        ];
+                    }
+                }
+
+                Http::withToken(config('services.openai.secret'))
+                    ->post("https://api.openai.com/v1/threads/{$threadId}/runs/{$runId}/submit_tool_outputs", [
+                        'tool_outputs' => $outputs
+                    ]);
+            }
+        } while (in_array($status['status'], ['queued', 'in_progress', 'requires_action']));
+    }
+
+    private function getThreadMessages(string $threadId): ?array
+    {
+        $messages = Http::withToken(config('services.openai.secret'))
+            ->get("https://api.openai.com/v1/threads/{$threadId}/messages")
+            ->json();
+
+        return $messages['data'] ?? null;
+    }
+
+    public function sendRequest(string $url, array $payload): ?array
+    {
+        $response = Http::withToken(config('services.openai.secret'))
+            ->post("https://api.openai.com/v1{$url}", $payload)
+            ->json();
+
+        return $response;
+    }
+
+    public function requestOpenAI(array $params): ?array
+    {
+        $type = $params['type'] ?? 'completion';
+        unset($params['type']);
+
+        $url = match ($type) {
+            'completion' => '/chat/completions',
+            'embedding' => '/embeddings',
+            'moderation' => '/moderations',
+            'assistant' => '/chat/completions', // Fallback (legacy)
+            default => '/chat/completions',
+        };
+
+        return $this->sendRequest($url, $params);
+    }
+}
