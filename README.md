@@ -35,11 +35,22 @@ OPENAI_API_KEY_ASSISTANTS=your_openai_assistants_key
 
 ### 2️⃣ Publish Config File (Optional)
 
-```bash
-php artisan vendor:publish --tag=openai-config
+```bash\ nphp artisan vendor:publish --tag=openai-config
 ```
 
-This will generate `config/openai.php`, where you can set defaults.
+This will generate `config/openai.php`, where you can set defaults, including rate limiting:
+
+```php
+return [
+    'keys' => [
+        'completions' => env('OPENAI_API_KEY_COMPLETIONS'),
+        'assistants'  => env('OPENAI_API_KEY_ASSISTANTS'),
+    ],
+
+    // Default retry behavior
+    'retries' => env('OPENAI_RETRIES', 3),
+];
+```
 
 ---
 
