@@ -148,7 +148,7 @@ class OpenAIService
      * @return array|null
      * @throws Exception
      */
-    private function requestOpenAI(array $params): ?array
+    public function requestOpenAI(array $params): ?array
     {
         $type = $params['type'] ?? 'completion';
         unset($params['type']);
