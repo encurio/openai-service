@@ -37,47 +37,78 @@ composer require encurio/openai-service:dev-main
 
 ## ⚙️ Configuration
 
-1. **.env**
+We will now use a dedicated configuration file `config/openai.php` for all OpenAI settings.
 
-   ```dotenv
-   OPENAI_API_KEY_COMPLETIONS=your_completions_key
-   OPENAI_API_KEY_ASSISTANTS=your_assistants_key
-   ```
-
-2. **(Optional) Publish config**
+1. **Publish the config file**
 
    ```bash
    php artisan vendor:publish --tag=openai-config
    ```
 
-   Then edit `config/openai.php`:
+2. **Review and edit `config/openai.php`**
 
    ```php
+   <?php
+
    return [
+       /*
+       |--------------------------------------------------------------------------
+       | OpenAI API Keys
+       |--------------------------------------------------------------------------
+       | Define your keys for chat completions and assistants here.
+       */
        'keys' => [
-           'completions' => env('OPENAI_API_KEY_COMPLETIONS'),
-           'assistants'  => env('OPENAI_API_KEY_ASSISTANTS'),
+           'completions' => env('OPENAI_API_KEY_COMPLETIONS', ''),
+           'assistants'  => env('OPENAI_API_KEY_ASSISTANTS', ''),
        ],
+
+       /*
+       |--------------------------------------------------------------------------
+       | Request Settings
+       |--------------------------------------------------------------------------
+       | Configure default retry behavior and HTTP timeout (seconds).
+       */
        'retries' => env('OPENAI_RETRIES', 3),
-       'timeout' => 60,
+       'timeout' => env('OPENAI_TIMEOUT', 60),
+
+       /*
+       |--------------------------------------------------------------------------
+       | Endpoints
+       |--------------------------------------------------------------------------
+       | Override base URLs if needed (e.g. for proxying).
+       */
+       'endpoints' => [
+           'completions' => env('OPENAI_URL_COMPLETIONS', 'https://api.openai.com/v1/chat/completions'),
+           'assistants'  => env('OPENAI_URL_ASSISTANTS',  'https://api.openai.com/v1/assistants'),
+       ],
    ];
    ```
 
-3. **Service Provider & Facade** (if not auto-discovered)
+3. **Set environment variables** in your `.env` file:
 
-   In `config/app.php`:
-
-   ```php
-   'providers' => [
-       // ...
-       Encurio\OpenAIService\Providers\OpenAIServiceProvider::class,
-   ],
-   'aliases' => [
-       'OpenAI' => Encurio\OpenAIService\Facades\OpenAI::class,
-   ],
+   ```dotenv
+   OPENAI_API_KEY_COMPLETIONS=your_completions_key
+   OPENAI_API_KEY_ASSISTANTS=your_assistants_key
+   OPENAI_RETRIES=3
+   OPENAI_TIMEOUT=60
    ```
 
-4. **Clear caches**
+4. **Update your `OpenAIService` constructor** to read from the new config:
+
+   ```php
+   public function __construct()
+   {
+       $this->keyCompletions = config('openai.keys.completions');
+       $this->keyAssistants  = config('openai.keys.assistants');
+       $this->retries        = config('openai.retries');
+       $this->timeout        = config('openai.timeout');
+
+       $this->baseUrlCompletions = config('openai.endpoints.completions');
+       $this->baseUrlAssistants  = config('openai.endpoints.assistants');
+   }
+   ```
+
+5. **Clear config cache**:
 
    ```bash
    php artisan config:clear && php artisan cache:clear
