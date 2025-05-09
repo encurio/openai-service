@@ -7,7 +7,7 @@ use Illuminate\Support\Facades\Log;
 
 class OpenAIService
 {
-    public function assistants(
+    public function assistant(
         string $assistantId,
         array $messages,
         array $tools = [],
