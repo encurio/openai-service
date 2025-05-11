@@ -8,79 +8,65 @@ use Illuminate\Support\Facades\Log;
 use Exception;
 
 /**
- * Service for interacting with OpenAI’s APIs: Completions, Embeddings,
- * Moderations, Images, and Assistants (Threads + optional Tools).
+ * Universal OpenAI Service:
  *
- * Configuration is pulled from config/openai.php:
- *   - keys.completions
- *   - keys.assistants
- *   - retries
- *   - timeout
- *   - endpoints.completions
- *   - endpoints.threads
- *   - endpoints.embeddings
- *   - endpoints.moderations
- *   - endpoints.images
- *   - defaults.model
- *   - defaults.assistant_model
- *   - defaults.temperature
- *   - defaults.max_tokens
- *   - defaults.top_p
+ *  - Chat Completions (stateless)
+ *  - Embeddings
+ *  - Moderations
+ *  - Images
+ *  - Threads API (stateful Assistants + Tools)
+ *
+ * Config (config/openai.php) must define:
+ *   keys.completions, keys.assistants,
+ *   retries, timeout,
+ *   endpoints.completions, .embeddings, .moderations, .images, .threads,
+ *   defaults.model, .assistant_model, .temperature, .max_tokens, .top_p
  */
 class OpenAIService
 {
     /**
-     * HTTP header required for all Assistants API v2 (Threads) calls.
+     * Header for all Threads calls (Assistants API v2).
      */
     private const ASSISTANTS_V2_HEADER = [
         'OpenAI-Beta' => 'assistants=v2',
     ];
 
+    //––– Configuration values –––
     private string $keyCompletions;
     private string $keyAssistants;
     private int    $retries;
     private int    $timeout;
 
     private string $baseUrlCompletions;
-    private string $baseUrlThreads;
     private string $baseUrlEmbeddings;
     private string $baseUrlModerations;
     private string $baseUrlImages;
+    private string $baseUrlThreads;
 
     /**
-     * Constructor.
+     * Constructor: load keys, retries, timeout and all endpoints.
      *
-     * Loads API keys, retry count, timeout and all endpoint URLs
-     * from config/openai.php, falling back to the official defaults.
-     *
-     * @throws Exception if any required config is missing
+     * @throws Exception if required API keys are missing
      */
     public function __construct()
     {
-        // Load API keys from config/openai.php
+        // Load API keys
         $this->keyCompletions = config('openai.keys.completions', '');
         $this->keyAssistants  = config('openai.keys.assistants', '');
-
         if (empty($this->keyCompletions) || empty($this->keyAssistants)) {
-            throw new Exception(
-                'OpenAI API keys for completions or assistants are not set in config/openai.php'
-            );
+            throw new Exception('OpenAI API keys are not set in config/openai.php');
         }
 
-        // Global retry and timeout settings
+        // Retries & timeout
         $this->retries = config('openai.retries', 3);
         $this->timeout = config('openai.timeout', 60);
 
-        // Load endpoints, with fallback defaults
+        // Endpoints
         $this->baseUrlCompletions = config(
             'openai.endpoints.completions',
             'https://api.openai.com/v1/chat/completions'
         );
-        $this->baseUrlThreads = config(
-            'openai.endpoints.threads',
-            'https://api.openai.com/v1/threads'
-        );
-        $this->baseUrlEmbeddings = config(
+        $this->baseUrlEmbeddings  = config(
             'openai.endpoints.embeddings',
             'https://api.openai.com/v1/embeddings'
         );
@@ -88,29 +74,38 @@ class OpenAIService
             'openai.endpoints.moderations',
             'https://api.openai.com/v1/moderations'
         );
-        $this->baseUrlImages = config(
+        $this->baseUrlImages      = config(
             'openai.endpoints.images',
             'https://api.openai.com/v1/images/generations'
         );
+        $this->baseUrlThreads     = config(
+            'openai.endpoints.threads',
+            'https://api.openai.com/v1/threads'
+        );
     }
 
+    //==============================================================================
+    // 1) Stateless Chat Completions + Helpers
+    //==============================================================================
+
     /**
-     * Chat Completion wrapper.
+     * Shortcut for a chat completion.
      *
      * @param  array<string,mixed> $opts {
-     *     @type array<int,array{role:string,content:string}> $messages    Chat messages
-     *     @type string|null    $model       Model name
-     *     @type float          $temperature Sampling temperature
-     *     @type int            $max_tokens  Maximum tokens
-     *     @type float          $top_p       Nucleus sampling parameter
-     *     @type string|null    $api_key     Override API key
-     *     @type int|null       $retries     Override retry count
+     *     @type array<int,array{role:string,content:string}> $messages    messages list
+     *     @type string|null    $model       model name
+     *     @type float          $temperature temperature
+     *     @type int            $max_tokens  max tokens
+     *     @type float          $top_p       nucleus sampling
+     *     @type string|null    $api_key     override key
+     *     @type int|null       $retries     override retries
      * }
-     * @return array|null Parsed JSON response, or null on failure.
-     * @throws Exception on missing parameters or API key.
+     * @return array|null         OpenAI JSON response or null
+     * @throws Exception on missing params/key
      */
     public function completion(array $opts): ?array
     {
+        // fill defaults from config/openai.php
         $defaults = [
             'model'       => config('openai.defaults.model', 'gpt-4o-mini'),
             'temperature' => config('openai.defaults.temperature', 0.7),
@@ -119,293 +114,286 @@ class OpenAIService
             'api_key'     => $this->keyCompletions,
             'retries'     => $this->retries,
         ];
-        $config = array_merge($defaults, $opts);
+        $cfg = array_merge($defaults, $opts);
 
-        if (empty($config['messages']) || !is_array($config['messages'])) {
-            throw new Exception(
-                'Missing or invalid "messages" parameter for completion().'
-            );
+        if (empty($cfg['messages']) || ! is_array($cfg['messages'])) {
+            throw new Exception('Missing or invalid "messages" for completion().');
         }
 
         return $this->requestOpenAI([
             'type'        => 'completion',
-            'messages'    => $config['messages'],
-            'model'       => $config['model'],
-            'temperature' => $config['temperature'],
-            'max_tokens'  => $config['max_tokens'],
-            'top_p'       => $config['top_p'],
-            'api_key'     => $config['api_key'],
-            'retries'     => $config['retries'],
+            'messages'    => $cfg['messages'],
+            'model'       => $cfg['model'],
+            'temperature' => $cfg['temperature'],
+            'max_tokens'  => $cfg['max_tokens'],
+            'top_p'       => $cfg['top_p'],
+            'api_key'     => $cfg['api_key'],
+            'retries'     => $cfg['retries'],
         ]);
     }
 
     /**
-     * Assistant wrapper: always uses the Threads API flow (with optional Tools).
+     * Core generic requester for non-thread types.
      *
-     * @param  array<string,mixed> $opts {
-     *     @type string                           $assistant_id   Assistant ID
-     *     @type array<int,array{role:string,content:string}> $messages       Chat messages
-     *     @type string|null    $model          Model name
-     *     @type array<string,mixed>   $tools           Tool definitions
-     *     @type array<string,callable> $tool_handlers   Callbacks for tools
+     * @param  array<string,mixed> $params {
+     *     @type string        $type     one of: completion, embedding, moderation, images
+     *     @type string|null   $api_key  override API key
+     *     @type int|null      $retries  override retries
+     *     // plus payload fields: messages, input, prompt, etc.
      * }
-     * @return array|null Final list of messages from the thread, or null.
-     * @throws Exception on missing parameters or API key.
-     */
-    public function assistant(array $opts): ?array
-    {
-        $defaults = [
-            'model'         => config('openai.defaults.assistant_model', 'gpt-4o'),
-            'tools'         => [],
-            'tool_handlers' => [],
-        ];
-        $config = array_merge($defaults, $opts);
-
-        if (empty($config['assistant_id']) || !is_string($config['assistant_id'])) {
-            throw new Exception(
-                'Missing or invalid "assistant_id" parameter for assistant().'
-            );
-        }
-        if (empty($config['messages']) || !is_array($config['messages'])) {
-            throw new Exception(
-                'Missing or invalid "messages" parameter for assistant().'
-            );
-        }
-
-        // Always drive the full Threads flow, even if tools is empty
-        return $this->runAssistantWithTools(
-            assistantId:  $config['assistant_id'],
-            messages:     $config['messages'],
-            tools:        $config['tools'],
-            toolHandlers: $config['tool_handlers'],
-            model:        $config['model']
-        );
-    }
-
-    /**
-     * Core handler for non-assistant request types:
-     * completion, embedding, moderation, images.
-     *
-     * @param  array<string,mixed> $params Must include:
-     *   - type      => request type string
-     *   - api_key   => (optional override API key)
-     *   - retries   => (optional override retry count)
-     *   - plus payload keys per type
-     * @return array|null Parsed JSON response, or null on failure.
-     * @throws Exception on missing API key or unknown type.
+     * @return array|null               JSON response or null
+     * @throws Exception on missing key or unknown type
      */
     public function requestOpenAI(array $params): ?array
     {
         $type   = $params['type'] ?? 'completion';
         $apiKey = $params['api_key']
-            ?? ($type === 'assistant'
-                ? $this->keyAssistants
-                : $this->keyCompletions
-            );
+            ?? ($type === 'images' || $type === 'completion'
+                ? $this->keyCompletions
+                : $this->keyCompletions);
 
         if (empty($apiKey)) {
-            throw new Exception(
-                "Missing OpenAI API key for request type \"{$type}\"."
-            );
+            throw new Exception("Missing API key for type \"$type\".");
         }
 
-        // Determine retry count override
         $retries = is_int($params['retries'] ?? null)
             ? $params['retries']
             : $this->retries;
 
-        // Remove internal-only params
+        // remove internals
         unset($params['type'], $params['api_key'], $params['retries']);
 
-        // Select endpoint based on type
+        // choose endpoint
         switch ($type) {
             case 'completion':
-                $url = $this->baseUrlCompletions;
-                break;
+                $url = $this->baseUrlCompletions; break;
             case 'embedding':
-                $url = $this->baseUrlEmbeddings;
-                break;
+                $url = $this->baseUrlEmbeddings; break;
             case 'moderation':
-                $url = $this->baseUrlModerations;
-                break;
+                $url = $this->baseUrlModerations; break;
             case 'images':
-                $url = $this->baseUrlImages;
-                break;
+                $url = $this->baseUrlImages; break;
             default:
-                throw new Exception(
-                    "Unknown OpenAI request type \"{$type}\" in requestOpenAI()."
-                );
+                throw new Exception("Unknown type \"$type\".");
         }
 
         return $this->sendRequest($apiKey, $url, $params, $retries);
     }
 
+    //==============================================================================
+    // 2) Stateful Threads API Helpers (Assistants + Tools)
+    //==============================================================================
+
     /**
-     * Implements the full Threads-based assistant flow:
-     * 1) create thread, 2) append messages, 3) start run,
-     * 4) poll & process tool calls, 5) fetch all messages.
+     * Create a new assistant Thread.
      *
-     * @param string   $assistantId  ID of the assistant.
-     * @param array    $messages     Chat messages to initiate the thread.
-     * @param array    $tools        Tool definitions for the run.
-     * @param array    $toolHandlers Callbacks for tool calls.
-     * @param string   $model        Model to use.
-     * @return array|null List of all messages in thread, or null.
-     * @throws Exception on thread/run creation failure.
+     * @return string               New thread_id
+     * @throws Exception on HTTP error
      */
-    public function runAssistantWithTools(
-        string $assistantId,
-        array  $messages,
-        array  $tools,
-        array  $toolHandlers,
-        string $model
-    ): ?array {
-        // 1) CREATE THREAD
-        $thread = Http::withToken($this->keyAssistants)
+    public function createThread(): string
+    {
+        $resp = Http::withToken($this->keyAssistants)
             ->withHeaders(self::ASSISTANTS_V2_HEADER)
-            ->post($this->baseUrlThreads, [])
+            ->post($this->baseUrlThreads, (object)[])
+            ->throw()
             ->json();
-        $threadId = $thread['id']
-            ?? throw new Exception('Failed to create assistant thread.');
 
-        // 2) APPEND MESSAGES
-        Http::withToken($this->keyAssistants)
-            ->withHeaders(self::ASSISTANTS_V2_HEADER)
-            ->post("{$this->baseUrlThreads}/{$threadId}/messages", [
-                'role'    => 'user',
-                'content' => implode("\n", array_column($messages, 'content')),
-            ]);
+        return $resp['id'] ?? throw new Exception('createThread: no id returned');
+    }
 
-        // 3) START RUN (tools or not)
-        $run = Http::withToken($this->keyAssistants)
+    /**
+     * Append one or more messages to an existing thread.
+     *
+     * @param string $threadId
+     * @param array<int,array{role:string,content:string|array}> $messages
+     */
+    public function appendMessageToThread(string $threadId, array $messages): void
+    {
+        foreach ($messages as $msg) {
+            $payload = [
+                'role'    => $msg['role'],
+                'content' => $this->formatContent($msg['content']),
+            ];
+            Http::withToken($this->keyAssistants)
+                ->withHeaders(self::ASSISTANTS_V2_HEADER)
+                ->post("{$this->baseUrlThreads}/{$threadId}/messages", $payload)
+                ->throw();
+        }
+    }
+
+    /**
+     * Normalize your content into the shape the API expects.
+     *
+     * @param  string|array  $content
+     * @return string|array
+     */
+    private function formatContent(string|array $content): string|array
+    {
+        // if it's already an array of structured parts, just trust it
+        if (is_array($content) && isset($content[0]['type'])) {
+            return $content;
+        }
+
+        // otherwise wrap a simple string into the array-of-text-parts form
+        return [
+            [
+                'type' => 'text',
+                'text' => (string) $content,
+            ],
+        ];
+    }
+
+    /**
+     * Start a run on a thread (with optional tools).
+     *
+     * @param string $threadId
+     * @param string $assistantId
+     * @param string $model
+     * @param array  $tools
+     * @return string               run_id
+     */
+    public function startRun(string $threadId, string $assistantId, string $model, array $tools = []): string
+    {
+        $resp = Http::withToken($this->keyAssistants)
             ->withHeaders(self::ASSISTANTS_V2_HEADER)
             ->post("{$this->baseUrlThreads}/{$threadId}/runs", [
                 'assistant_id'    => $assistantId,
                 'model'           => $model,
                 'tools'           => $tools,
                 'tool_choice'     => 'auto',
-                'response_format' => 'json',
             ])
+            ->throw()
             ->json();
-        $runId = $run['id']
-            ?? throw new Exception('Failed to start assistant run.');
 
-        // 4) POLL & PROCESS REQUIRED TOOL CALLS
-        $this->processToolCalls($threadId, $runId, $toolHandlers);
-
-        // 5) RETRIEVE FINAL MESSAGES
-        return $this->getThreadMessages($threadId);
+        return $resp['id'] ?? throw new Exception('startRun: no run id');
     }
 
     /**
-     * Polls a running assistant thread for 'requires_action' events,
-     * executes the corresponding tool handlers, and submits outputs.
+     * Poll for tool calls, execute handlers, submit outputs.
      *
-     * @param string $threadId      Thread ID.
-     * @param string $runId         Run ID.
-     * @param array  $toolHandlers  Callbacks keyed by tool name.
+     * @param string $threadId
+     * @param string $runId
+     * @param array<string,callable> $toolHandlers
      */
-    private function processToolCalls(
-        string $threadId,
-        string $runId,
-        array  $toolHandlers
-    ): void {
+    public function pollAndSubmitToolCalls(string $threadId, string $runId, array $toolHandlers = []): void
+    {
         do {
-            // Prevent tight-looping and respect rate limits
             sleep(2);
-
             $status = Http::withToken($this->keyAssistants)
                 ->withHeaders(self::ASSISTANTS_V2_HEADER)
                 ->get("{$this->baseUrlThreads}/{$threadId}/runs/{$runId}")
+                ->throw()
                 ->json();
 
-            if (
-                ($status['status'] ?? '') === 'requires_action'
-                && isset($status['required_action']['submit_tool_outputs'])
-            ) {
-                $outputs = [];
-                foreach (
-                    $status['required_action']['submit_tool_outputs']['tool_calls']
-                    as $call
-                ) {
-                    $name = $call['function']['name'];
-                    $args = json_decode($call['function']['arguments'], true);
-                    if (
-                        isset($toolHandlers[$name])
-                        && is_callable($toolHandlers[$name])
-                    ) {
-                        $outputs[] = [
-                            'tool_call_id' => $call['id'],
-                            'output'       => call_user_func(
-                                $toolHandlers[$name],
-                                $args
-                            ),
+            if (($status['status'] ?? '') === 'requires_action') {
+                $outs = [];
+                foreach ($status['required_action']['submit_tool_outputs']['tool_calls'] as $c) {
+                    $name = $c['function']['name'];
+                    $args = json_decode($c['function']['arguments'], true);
+                    if (isset($toolHandlers[$name]) && is_callable($toolHandlers[$name])) {
+                        $outs[] = [
+                            'tool_call_id' => $c['id'],
+                            'output'       => call_user_func($toolHandlers[$name], $args),
                         ];
                     }
                 }
-
                 Http::withToken($this->keyAssistants)
                     ->withHeaders(self::ASSISTANTS_V2_HEADER)
                     ->post("{$this->baseUrlThreads}/{$threadId}/runs/{$runId}/submit_tool_outputs", [
-                        'tool_outputs' => $outputs,
-                    ]);
+                        'tool_outputs' => $outs,
+                    ])
+                    ->throw();
             }
-        } while (
-            in_array(
-                $status['status'] ?? '',
-                ['queued', 'in_progress', 'requires_action'],
-                true
-            )
+        } while (in_array($status['status'] ?? '', ['queued','in_progress','requires_action'], true));
+    }
+
+    /**
+     * Fetch and normalize all messages from a thread.
+     *
+     * @param  string  $threadId
+     * @param  int     $limit     Anzahl der Nachrichten, die maximal abgefragt werden sollen
+     * @return array<int,array{role:string,content:string}>
+     */
+    public function getThreadMessages(string $threadId, int $limit = 100): array
+    {
+        $response = Http::withToken($this->keyAssistants)
+            ->withHeaders(self::ASSISTANTS_V2_HEADER)
+            ->get("{$this->baseUrlThreads}/{$threadId}/messages", [
+                'limit' => $limit,
+                'order' => 'asc',
+            ])
+            ->throw()
+            ->json();
+
+        $raw = $response['data'] ?? [];
+
+        // Mappe jedes Roh-Objekt auf ['role'=>string,'content'=>string]
+        return array_map(
+            function (array $msg): array {
+                $role = $msg['author']['role'] ?? 'assistant';
+                $parts = $msg['content']['parts'] ?? [];
+                $content = implode("\n", $parts);
+                return ['role' => $role, 'content' => $content];
+            },
+            $raw
         );
     }
 
     /**
-     * Retrieves all messages from a completed assistant thread.
+     * Convenience: run the entire thread flow in one go.
      *
-     * @param string $threadId Thread ID.
-     * @return array|null List of messages, or null on failure.
+     * @param string $assistantId
+     * @param array<int,array{role:string,content:string}> $messages
+     * @param string $model
+     * @param array  $tools
+     * @param array<string,callable> $toolHandlers
+     * @return array<int,array{role:string,content:string}>
      */
-    private function getThreadMessages(string $threadId): ?array
-    {
-        $response = Http::withToken($this->keyAssistants)
-            ->withHeaders(self::ASSISTANTS_V2_HEADER)
-            ->get("{$this->baseUrlThreads}/{$threadId}/messages")
-            ->json();
-
-        return $response['data'] ?? null;
+    public function runThread(
+        string $assistantId,
+        array  $messages,
+        string $model,
+        array  $tools = [],
+        array  $toolHandlers = []
+    ): array {
+        $tId = $this->createThread();
+        $this->appendMessageToThread($tId, $messages);
+        $rId = $this->startRun($tId, $assistantId, $model, $tools);
+        $this->pollAndSubmitToolCalls($tId, $rId, $toolHandlers);
+        return $this->getThreadMessages($tId);
     }
 
+    //==============================================================================
+    // 3) Internal HTTP helper (used by completion & other)
+    //==============================================================================
+
     /**
-     * Low-level HTTP request sender with retry and timeout logic.
+     * Low-level HTTP POST with retry & timeout.
      *
-     * @param string $apiKey  Bearer token.
-     * @param string $url     Full URL to POST.
-     * @param array  $payload JSON payload.
-     * @param int    $retries Number of retry attempts.
-     * @return array|null Parsed JSON response or null after retries.
+     * @param string $apiKey
+     * @param string $url
+     * @param array  $payload
+     * @param int    $retries
+     * @return array|null
      */
-    private function sendRequest(
-        string $apiKey,
-        string $url,
-        array  $payload,
-        int    $retries
-    ): ?array {
+    private function sendRequest(string $apiKey, string $url, array $payload, int $retries): ?array
+    {
         for ($i = 0; $i < $retries; $i++) {
             try {
-                $response = Http::timeout($this->timeout)
+                $resp = Http::timeout($this->timeout)
                     ->withHeaders([
                         'Authorization' => "Bearer {$apiKey}",
                         'Content-Type'  => 'application/json',
                     ])
                     ->post($url, $payload);
 
-                if ($response->successful()) {
-                    return $response->json();
+                if ($resp->successful()) {
+                    return $resp->json();
                 }
 
                 Log::error('OpenAI API Error', [
-                    'status' => $response->status(),
-                    'body'   => $response->body(),
+                    'status' => $resp->status(),
+                    'body'   => $resp->body(),
                 ]);
             } catch (Exception $e) {
                 Log::warning('OpenAI HTTP Exception', [
@@ -414,7 +402,6 @@ class OpenAIService
                 sleep(1);
             }
         }
-
         return null;
     }
 }
