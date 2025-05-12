@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Encurio\OpenAIService\Services;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Exception;
@@ -42,6 +43,10 @@ class OpenAIService
     private string $baseUrlModerations;
     private string $baseUrlImages;
     private string $baseUrlThreads;
+
+    private ?string $projectApiKey = null;
+
+    private $pollResponse = '';
 
     /**
      * Constructor: load keys, retries, timeout and all endpoints.
@@ -84,6 +89,23 @@ class OpenAIService
         );
     }
 
+    /**
+     * Set an override API key for the current request cycle.
+     *
+     * @param string $apiKey
+     * @return void
+     */
+    public function setProjectApiKey(string $apiKey): void
+    {
+        $this->projectApiKey = $apiKey;
+    }
+
+    public function getPollResponse()
+    {
+        return $this->pollResponse;
+    }
+
+
     //==============================================================================
     // 1) Stateless Chat Completions + Helpers
     //==============================================================================
@@ -111,7 +133,7 @@ class OpenAIService
             'temperature' => config('openai.defaults.temperature', 0.7),
             'max_tokens'  => config('openai.defaults.max_tokens', 1000),
             'top_p'       => config('openai.defaults.top_p', 1.0),
-            'api_key'     => $this->keyCompletions,
+            'api_key'     => $apiKey = (!empty($params['api_key']) ? $params['api_key'] : (!empty($this->projectApiKey) ? $this->projectApiKey : $this->keyCompletions)),
             'retries'     => $this->retries,
         ];
         $cfg = array_merge($defaults, $opts);
@@ -127,7 +149,7 @@ class OpenAIService
             'temperature' => $cfg['temperature'],
             'max_tokens'  => $cfg['max_tokens'],
             'top_p'       => $cfg['top_p'],
-            'api_key'     => $cfg['api_key'],
+            'api_key'     => $apiKey = (!empty($params['api_key']) ? $params['api_key'] : (!empty($this->projectApiKey) ? $this->projectApiKey : $this->keyCompletions)),
             'retries'     => $cfg['retries'],
         ]);
     }
@@ -148,9 +170,12 @@ class OpenAIService
     {
         $type   = $params['type'] ?? 'completion';
         $apiKey = $params['api_key']
-            ?? ($type === 'images' || $type === 'completion'
-                ? $this->keyCompletions
-                : $this->keyCompletions);
+            ?? $this->projectApiKey
+            ?? match ($type) {
+                'completion', 'images'     => $this->keyCompletions,
+                'embedding', 'moderation'  => $this->keyAssistants,
+                default                    => throw new Exception("Unknown request type \"$type\"."),
+            };
 
         if (empty($apiKey)) {
             throw new Exception("Missing API key for type \"$type\".");
@@ -185,6 +210,16 @@ class OpenAIService
     //==============================================================================
 
     /**
+     * returns an API key for the OpenAI assistant.
+     * @return \Illuminate\Config\Repository|\Illuminate\Foundation\Application|mixed|object|string|null
+     */
+    private function _getAssistantKey() {
+        return (!empty($this->projectApiKey)
+            ? $this->projectApiKey
+            : $this->keyAssistants);
+    }
+
+    /**
      * Create a new assistant Thread.
      *
      * @return string               New thread_id
@@ -192,7 +227,7 @@ class OpenAIService
      */
     public function createThread(): string
     {
-        $resp = Http::withToken($this->keyAssistants)
+        $resp = Http::withToken($this->_getAssistantKey())
             ->withHeaders(self::ASSISTANTS_V2_HEADER)
             ->post($this->baseUrlThreads, (object)[])
             ->throw()
@@ -214,7 +249,8 @@ class OpenAIService
                 'role'    => $msg['role'],
                 'content' => $this->formatContent($msg['content']),
             ];
-            Http::withToken($this->keyAssistants)
+
+            $resp = Http::withToken($this->_getAssistantKey())
                 ->withHeaders(self::ASSISTANTS_V2_HEADER)
                 ->post("{$this->baseUrlThreads}/{$threadId}/messages", $payload)
                 ->throw();
@@ -254,7 +290,7 @@ class OpenAIService
      */
     public function startRun(string $threadId, string $assistantId, string $model, array $tools = []): string
     {
-        $resp = Http::withToken($this->keyAssistants)
+        $resp = Http::withToken($this->_getAssistantKey())
             ->withHeaders(self::ASSISTANTS_V2_HEADER)
             ->post("{$this->baseUrlThreads}/{$threadId}/runs", [
                 'assistant_id'    => $assistantId,
@@ -275,37 +311,115 @@ class OpenAIService
      * @param string $runId
      * @param array<string,callable> $toolHandlers
      */
-    public function pollAndSubmitToolCalls(string $threadId, string $runId, array $toolHandlers = []): void
+    public function pollAndSubmitToolCalls(string $threadId, string $runId, array $toolHandlers = []): array
     {
         do {
             sleep(2);
-            $status = Http::withToken($this->keyAssistants)
+
+            $resp = Http::withToken($this->_getAssistantKey())
                 ->withHeaders(self::ASSISTANTS_V2_HEADER)
                 ->get("{$this->baseUrlThreads}/{$threadId}/runs/{$runId}")
                 ->throw()
                 ->json();
 
-            if (($status['status'] ?? '') === 'requires_action') {
-                $outs = [];
-                foreach ($status['required_action']['submit_tool_outputs']['tool_calls'] as $c) {
-                    $name = $c['function']['name'];
-                    $args = json_decode($c['function']['arguments'], true);
+            $status = $resp['status'] ?? 'unknown';
+
+            if ($status === 'requires_action') {
+                $toolCalls = $resp['required_action']['submit_tool_outputs']['tool_calls'] ?? [];
+                $toolOutputs = [];
+
+                foreach ($toolCalls as $call) {
+                    $name = $call['function']['name'];
+                    $args = json_decode($call['function']['arguments'], true);
+
+                    Cache::put('art_recognition_status', [
+                        'status' => "Executing tool: $name",
+                        'tool' => $name,
+                        'args' => $args,
+                        'tool_call_id' => $call['id'],
+                    ], now()->addMinutes(10));
+
                     if (isset($toolHandlers[$name]) && is_callable($toolHandlers[$name])) {
-                        $outs[] = [
-                            'tool_call_id' => $c['id'],
-                            'output'       => call_user_func($toolHandlers[$name], $args),
+                        $output = call_user_func($toolHandlers[$name], $args);
+                        $toolOutputs[] = [
+                            'tool_call_id' => $call['id'],
+                            'output' => json_encode($output),
                         ];
                     }
                 }
-                Http::withToken($this->keyAssistants)
+
+                Http::withToken($this->_getAssistantKey())
                     ->withHeaders(self::ASSISTANTS_V2_HEADER)
                     ->post("{$this->baseUrlThreads}/{$threadId}/runs/{$runId}/submit_tool_outputs", [
-                        'tool_outputs' => $outs,
+                        'tool_outputs' => $toolOutputs,
                     ])
                     ->throw();
             }
-        } while (in_array($status['status'] ?? '', ['queued','in_progress','requires_action'], true));
+
+            if (in_array($status, ['cancelled', 'expired', 'failed'], true)) {
+                throw new \RuntimeException("Run failed or was cancelled: $status");
+            }
+
+        } while (($status ?? '') !== 'completed');
+
+        return $resp;
     }
+
+
+
+    /**
+     * Poll until the run is completed, handle tool calls if needed.
+     *
+     * @param string $threadId
+     * @param string $runId
+     * @param array<string,callable> $toolHandlers
+     * @return array
+     * @throws \RuntimeException on failure or timeout
+     */
+    public function pollUntilRunComplete(string $threadId, string $runId, array $toolHandlers = []): array
+    {
+        $this->pollResponse = [];
+        $attempts = 0;
+        $maxAttempts = 60;
+
+        do {
+            sleep(3);
+
+            $resp = Http::withToken($this->_getAssistantKey())
+                ->withHeaders(self::ASSISTANTS_V2_HEADER)
+                ->get("{$this->baseUrlThreads}/{$threadId}/runs/{$runId}")
+                ->throw()
+                ->json();
+
+            $status = $resp['status'] ?? 'unknown';
+
+            if ($status === 'requires_action' && !empty($toolHandlers)) {
+                // Tool-Calls delegieren
+                return $this->pollAndSubmitToolCalls($threadId, $runId, $toolHandlers);
+            }
+
+            Cache::put('art_recognition_status', [
+                'status' => "AI Assitant Status: $status - ($attempts)",
+                'run_id' => $runId,
+            ], now()->addMinutes(10));
+
+            if (in_array($status, ['failed', 'cancelled', 'expired'], true)) {
+                throw new \RuntimeException("Run failed or was cancelled: $status ");
+            }
+
+            $this->pollResponse = $resp;
+            $attempts++;
+
+        } while ($status !== 'completed' && $attempts < $maxAttempts);
+
+        if ($status !== 'completed') {
+            throw new \RuntimeException("Polling timeout: Run did not complete in time.");
+        }
+
+        return $this->pollResponse;
+    }
+
+
 
     /**
      * Fetch and normalize all messages from a thread.
@@ -316,7 +430,7 @@ class OpenAIService
      */
     public function getThreadMessages(string $threadId, int $limit = 100): array
     {
-        $response = Http::withToken($this->keyAssistants)
+        $resp = Http::withToken($this->_getAssistantKey())
             ->withHeaders(self::ASSISTANTS_V2_HEADER)
             ->get("{$this->baseUrlThreads}/{$threadId}/messages", [
                 'limit' => $limit,
@@ -325,8 +439,11 @@ class OpenAIService
             ->throw()
             ->json();
 
-        $raw = $response['data'] ?? [];
+        $raw = $resp['data'] ?? [];
 
+        return $raw;
+
+        /*
         // Mappe jedes Roh-Objekt auf ['role'=>string,'content'=>string]
         return array_map(
             function (array $msg): array {
@@ -337,6 +454,7 @@ class OpenAIService
             },
             $raw
         );
+        */
     }
 
     /**
