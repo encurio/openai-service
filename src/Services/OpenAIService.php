@@ -404,7 +404,7 @@ class OpenAIService
             ], now()->addMinutes(10));
 
             if (in_array($status, ['failed', 'cancelled', 'expired'], true)) {
-                throw new \RuntimeException("Run failed or was cancelled: $status ");
+                throw new \RuntimeException("Run failed or was cancelled: $status " . var_export($resp, true));
             }
 
             $this->pollResponse = $resp;
