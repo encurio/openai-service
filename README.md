@@ -35,19 +35,90 @@ OPENAI_API_KEY_ASSISTANTS=your_openai_assistants_key
 
 ### 2️⃣ Publish Config File (Optional)
 
-```bash\ nphp artisan vendor:publish --tag=openai-config
+```bash
+php artisan vendor:publish --tag=openai-config
 ```
 
-This will generate `config/openai.php`, where you can set defaults, including rate limiting:
+This will generate `config/openai.php`:
+
+````php
+<?php
+
+declare(strict_types=1);
+
+return [
+    /*
+    |--------------------------------------------------------------------------
+    | OpenAI API Keys
+    |--------------------------------------------------------------------------
+    | Define your API keys for completions and assistants.
+    */
+    'keys' => [
+        'completions' => env('OPENAI_API_KEY_COMPLETIONS', ''),
+        'assistants'  => env('OPENAI_API_KEY_ASSISTANTS', ''),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Request Settings
+    |--------------------------------------------------------------------------
+    | Retries and timeout for API calls.
+    */
+    'retries' => env('OPENAI_RETRIES', 3),
+    'timeout' => env('OPENAI_TIMEOUT', 60),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Endpoints
+    |--------------------------------------------------------------------------
+    | Override base URLs if needed.
+    */
+    'endpoints' => [
+        'completions' => env(
+            'OPENAI_URL_COMPLETIONS',
+            'https://api.openai.com/v1/chat/completions'
+        ),
+        'threads'     => env(
+            'OPENAI_URL_THREADS',
+            'https://api.openai.com/v1/threads'
+        ),
+        'embeddings'  => env(
+            'OPENAI_URL_EMBEDDINGS',
+            'https://api.openai.com/v1/embeddings'
+        ),
+        'moderations' => env(
+            'OPENAI_URL_MODERATIONS',
+            'https://api.openai.com/v1/moderations'
+        ),
+        'images'      => env(
+            'OPENAI_URL_IMAGES',
+            'https://api.openai.com/v1/images/generations'
+        ),
+    ],
+];
+```bash
+php artisan vendor:publish --tag=openai-config
+````
+
+> This will generate the `config/openai.php` file in your project, which you can customize:
 
 ```php
+<?php
+
+declare(strict_types=1);
+
 return [
+    /**
+     * Default OpenAI API keys for various features
+     */
     'keys' => [
         'completions' => env('OPENAI_API_KEY_COMPLETIONS'),
         'assistants'  => env('OPENAI_API_KEY_ASSISTANTS'),
     ],
 
-    // Default retry behavior
+    /**
+     * Number of automatic retry attempts on failure
+     */
     'retries' => env('OPENAI_RETRIES', 3),
 ];
 ```
@@ -59,7 +130,7 @@ return [
 ### 1️⃣ Basic Completion Request (Text Generation)
 
 ```php
-use OpenAI;
+use Encurio\OpenAIService\Facades\OpenAI;
 
 $response = OpenAI::requestOpenAI([
     'type' => 'completion',
@@ -84,7 +155,7 @@ $response = OpenAI::completion([
 ### 2️⃣ Using an OpenAI Assistant (with Tools)
 
 ```php
-use OpenAI;
+use Encurio\OpenAIService\Facades\OpenAI;
 
 $messages = [
     ['role' => 'system', 'content' => 'You are a calculator.'],
@@ -109,7 +180,7 @@ echo $response['choices'][0]['message']['content'];
 ### 3️⃣ Generating Embeddings
 
 ```php
-use OpenAI;
+use Encurio\OpenAIService\Facades\OpenAI;
 
 $response = OpenAI::requestOpenAI([
     'type' => 'embedding',
@@ -123,7 +194,7 @@ print_r($response['data']);
 ### 4️⃣ Content Moderation
 
 ```php
-use OpenAI;
+use Encurio\OpenAIService\Facades\OpenAI;
 
 $response = OpenAI::requestOpenAI([
     'type' => 'moderation',
@@ -136,7 +207,7 @@ print_r($response['results']);
 ### 5️⃣ Sending an Image for Analysis
 
 ```php
-use OpenAI;
+use Encurio\OpenAIService\Facades\OpenAI;
 
 $imageUrl = "https://example.com/sample.jpg";
 
