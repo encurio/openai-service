@@ -1,23 +1,18 @@
 # 🚀 OpenAI Service for Laravel (`encurio/openai-service`)
 
-This package provides a flexible **OpenAI Service** for Laravel, enabling seamless communication with OpenAI’s APIs:
-
-* **Assistants** (legacy threads & new Tools API)
-* **Chat Completions**
-* **Embeddings**
-* **Moderations**
-* **Images**
+This package provides a flexible **OpenAI Service** for Laravel, allowing seamless integration with OpenAI’s API.
+Supports **Assistants**, **Completions**, **Embeddings**, **Moderations**, **Images**, and **Tool Integrations**.
 
 ---
 
 ## 📌 Features
 
-* ✅ **Assistants & Completions** — Use structured AI assistants or direct chat completions.
-* ✅ **Embeddings & Moderations** — Generate vector embeddings and perform content moderation.
-* ✅ **Tool Integrations** — Extend assistant sessions with custom tools and handlers.
-* ✅ **Dynamic API Key Handling** — Default keys from `.env` and per-request overrides.
-* ✅ **Flexible Model Selection** — Default `gpt-4o`, configurable to any OpenAI model.
-* ✅ **Image Support** — Send images (URLs or base64) alongside text.
+* ✅ **Assistants & Completions** – Structured AI assistants or direct text completions.
+* ✅ **Embeddings & Moderations** – Generate vector embeddings and perform content moderation.
+* ✅ **Dynamic API Key Handling** – Uses default keys from `.env` but allows per-request overrides.
+* ✅ **Flexible Model Selection** – Defaults to `gpt-4o`, but any OpenAI model can be used.
+* ✅ **Handles Images & Text** – Send both textual prompts and images for analysis.
+* ✅ **Tool Integration** – Pass arrays of `tools` and `toolHandlers` to extend assistant capabilities.
 
 ---
 
@@ -27,207 +22,138 @@ This package provides a flexible **OpenAI Service** for Laravel, enabling seamle
 composer require encurio/openai-service
 ```
 
-For the latest unreleased features:
-
-```bash
-composer require encurio/openai-service:dev-main
-```
-
 ---
 
 ## ⚙️ Configuration
 
-We will now use a dedicated configuration file `config/openai.php` for all OpenAI settings.
+### 1️⃣ Set OpenAI API Keys in `.env`
 
-1. **Publish the config file**
+```env
+OPENAI_API_KEY_COMPLETIONS=your_openai_completions_key
+OPENAI_API_KEY_ASSISTANTS=your_openai_assistants_key
+```
 
-   ```bash
-   php artisan vendor:publish --tag=openai-config
-   ```
+### 2️⃣ Publish Config File (Optional)
 
-2. **Review and edit `config/openai.php`**
+```bash\ nphp artisan vendor:publish --tag=openai-config
+```
 
-   ```php
-   <?php
+This will generate `config/openai.php`, where you can set defaults, including rate limiting:
 
-   return [
-       /*
-       |--------------------------------------------------------------------------
-       | OpenAI API Keys
-       |--------------------------------------------------------------------------
-       | Define your keys for chat completions and assistants here.
-       */
-       'keys' => [
-           'completions' => env('OPENAI_API_KEY_COMPLETIONS', ''),
-           'assistants'  => env('OPENAI_API_KEY_ASSISTANTS', ''),
-       ],
+```php
+return [
+    'keys' => [
+        'completions' => env('OPENAI_API_KEY_COMPLETIONS'),
+        'assistants'  => env('OPENAI_API_KEY_ASSISTANTS'),
+    ],
 
-       /*
-       |--------------------------------------------------------------------------
-       | Request Settings
-       |--------------------------------------------------------------------------
-       | Configure default retry behavior and HTTP timeout (seconds).
-       */
-       'retries' => env('OPENAI_RETRIES', 3),
-       'timeout' => env('OPENAI_TIMEOUT', 60),
-
-       /*
-       |--------------------------------------------------------------------------
-       | Endpoints
-       |--------------------------------------------------------------------------
-       | Override base URLs if needed (e.g. for proxying).
-       */
-       'endpoints' => [
-           'completions' => env('OPENAI_URL_COMPLETIONS', 'https://api.openai.com/v1/chat/completions'),
-           'assistants'  => env('OPENAI_URL_ASSISTANTS',  'https://api.openai.com/v1/assistants'),
-       ],
-   ];
-   ```
-
-3. **Set environment variables** in your `.env` file:
-
-   ```dotenv
-   OPENAI_API_KEY_COMPLETIONS=your_completions_key
-   OPENAI_API_KEY_ASSISTANTS=your_assistants_key
-   OPENAI_RETRIES=3
-   OPENAI_TIMEOUT=60
-   ```
-
-4. **Update your `OpenAIService` constructor** to read from the new config:
-
-   ```php
-   public function __construct()
-   {
-       $this->keyCompletions = config('openai.keys.completions');
-       $this->keyAssistants  = config('openai.keys.assistants');
-       $this->retries        = config('openai.retries');
-       $this->timeout        = config('openai.timeout');
-
-       $this->baseUrlCompletions = config('openai.endpoints.completions');
-       $this->baseUrlAssistants  = config('openai.endpoints.assistants');
-   }
-   ```
-
-5. **Clear config cache**:
-
-   ```bash
-   php artisan config:clear && php artisan cache:clear
-   ```
+    // Default retry behavior
+    'retries' => env('OPENAI_RETRIES', 3),
+];
+```
 
 ---
 
 ## 🛠️ Usage Examples
 
-### 1️⃣ Chat Completion
+### 1️⃣ Basic Completion Request (Text Generation)
 
 ```php
 use OpenAI;
 
-$response = OpenAI::completion([
-    'messages'   => [
-        ['role' => 'user', 'content' => 'Write a haiku about Laravel.'],
-    ],
-    'model'       => 'gpt-3.5-turbo',
-    'temperature' => 0.5,
-    'max_tokens'  => 60,
-]);
-echo $response['choices'][0]['message']['content'];
-```
-
-### 2️⃣ Assistant (Legacy Threads, **without** tools)
-
-```php
-use OpenAI;
-
-$response = OpenAI::assistant([
-    'assistant_id' => 'asst_123456789',
-    'messages'     => [
-        ['role' => 'system', 'content' => 'You are a helpful assistant.'],
-        ['role' => 'user',   'content' => 'Summarize our Q1 financials.'],
-    ],
-    'model'        => 'gpt-4o',
-    'temperature'  => 0.7,
-    'max_tokens'   => 500,
-    'top_p'        => 1.0,
-]);
-echo $response['choices'][0]['message']['content'];
-```
-
-### 3️⃣ Assistant **with Tools** (new API)
-
-```php
-use OpenAI;
-
-// Define tools
-$tools = [
-    [
-        'name'        => 'web_search',
-        'description' => 'Search the internet',
-        'parameters'  => [
-            'query' => ['type' => 'string', 'description' => 'Search term'],
-        ],
-    ],
-];
-// Define handlers
-$handlers = [
-    'web_search' => function(array $args) {
-        return ['results' => MySearchService::search($args['query'])];
-    },
-];
-
-// Call assistant with tools
-$response = OpenAI::assistant([
-    'assistant_id'  => 'asst_123456789',
-    'messages'      => [
-        ['role' => 'system', 'content' => 'Use tools to fetch data.'],
-        ['role' => 'user',   'content' => 'Search for current Berlin weather.'],
-    ],
-    'tools'         => $tools,
-    'tool_handlers' => $handlers,
-    'model'         => 'gpt-4o',
-    'temperature'   => 0.5,
-]);
-$reply = end($response);
-echo $reply['content'];
-```
-
-### 4️⃣ Embeddings
-
-```php
 $response = OpenAI::requestOpenAI([
-    'type'  => 'embedding',
-    'model' => 'text-embedding-ada-002',
-    'input' => ['This is some text to embed'],
+    'type' => 'completion',
+    'model' => 'gpt-4o',
+    'messages' => [
+        ['role' => 'user', 'content' => 'Write a short SEO-friendly product description.']
+    ],
 ]);
+echo $response['choices'][0]['message']['content'];
+
+// Or using the completion shortcut:
+$response = OpenAI::completion([
+    'messages' => [
+        ['role' => 'user', 'content' => 'Tell me a joke.']
+    ],
+    'model' => 'gpt-3.5-turbo',
+    'temperature' => 0.9,
+    'maxTokens' => 200
+]);
+```
+
+### 2️⃣ Using an OpenAI Assistant (with Tools)
+
+```php
+use OpenAI;
+
+$messages = [
+    ['role' => 'system', 'content' => 'You are a calculator.'],
+    ['role' => 'user', 'content' => 'What is 14 * 7?']
+];
+
+$tools = ['calculator'];
+$toolHandlers = [
+    'calculator' => fn($input) => CalculatorService::calculate($input)
+];
+
+$response = OpenAI::assistant(
+    assistantId: 'asst_123456789',
+    messages: $messages,
+    tools: $tools,
+    toolHandlers: $toolHandlers,
+    model: 'gpt-4o'
+);
+echo $response['choices'][0]['message']['content'];
+```
+
+### 3️⃣ Generating Embeddings
+
+```php
+use OpenAI;
+
+$response = OpenAI::requestOpenAI([
+    'type' => 'embedding',
+    'model' => 'text-embedding-ada-002',
+    'input' => ['Your text to embed here'],
+]);
+
 print_r($response['data']);
 ```
 
-### 5️⃣ Moderation
+### 4️⃣ Content Moderation
 
 ```php
+use OpenAI;
+
 $response = OpenAI::requestOpenAI([
-    'type'  => 'moderation',
-    'input' => 'Some user-generated content',
+    'type' => 'moderation',
+    'input' => 'Text to classify for policy violations',
 ]);
+
 print_r($response['results']);
 ```
 
-### 6️⃣ Image Analysis
+### 5️⃣ Sending an Image for Analysis
 
 ```php
+use OpenAI;
+
+$imageUrl = "https://example.com/sample.jpg";
+
 $response = OpenAI::requestOpenAI([
-    'type'    => 'completion',
-    'model'   => 'gpt-4o',
-    'messages'=> [
-        ['role'=>'user','content'=>[
-            ['type'=>'text','text'=>'Describe this image'],
-            ['type'=>'image_url','image_url'=>[
-                'url'=>'https://example.com/pic.jpg',
-                'detail'=>'high',
-            ]],
-        ]],
+    'type' => 'completion', // or 'assistant'
+    'model' => 'gpt-4o',
+    'messages' => [
+        ['role' => 'user', 'content' => [
+            ['type' => 'text', 'text' => 'Describe this image.'],
+            ['type' => 'image_url', 'image_url' => [
+                'url' => $imageUrl,
+                'detail' => 'high'
+            ]]
+        ]]
     ],
 ]);
+
 echo $response['choices'][0]['message']['content'];
 ```
 
@@ -235,23 +161,24 @@ echo $response['choices'][0]['message']['content'];
 
 ## 🔧 Available Parameters
 
-| Key             | Type         | Default    | Description                                                |
-| --------------- | ------------ | ---------- | ---------------------------------------------------------- |
-| `type`          | string       | completion | `completion`, `assistant`, `embedding`, `moderation`, etc. |
-| `messages`      | array        | required   | Chat messages (\[role,content] pairs)                      |
-| `assistant_id`  | string       | —          | Assistant ID (for `assistant` type)                        |
-| `model`         | string       | gpt-4o     | Model name (`gpt-4o`, `gpt-3.5-turbo`, etc.)               |
-| `temperature`   | float        | 0.7        | Sampling temperature                                       |
-| `max_tokens`    | int          | 1000       | Max tokens                                                 |
-| `top_p`         | float        | 1.0        | Nucleus sampling parameter                                 |
-| `tools`         | array        | \[]        | Tools definitions (for assistant sessions)                 |
-| `tool_handlers` | array        | \[]        | Handler callbacks for tools                                |
-| `input`         | array/string | —          | Input for `embedding` or `moderation` calls                |
-| `api_key`       | string       | .env value | Override default API key                                   |
-| `retries`       | int          | 3          | Retry attempts                                             |
+| Parameter      | Type     | Default      | Description                                                  |
+| -------------- | -------- | ------------ | ------------------------------------------------------------ |
+| `type`         | `string` | `completion` | One of `completion`, `assistant`, `embedding`, `moderation`. |
+| `messages`     | `array`  | Required     | List of chat messages (`system`, `user`, `assistant`).       |
+| `tools`        | `array`  | `[]`         | Names of tools to enable in an assistant session.            |
+| `toolHandlers` | `array`  | `[]`         | Associative array of tool names to handler callbacks.        |
+| `assistantId`  | `string` | `null`       | The ID of an OpenAI Assistant (if `type` is `assistant`).    |
+| `model`        | `string` | `gpt-4o`     | The OpenAI model to use (e.g., `gpt-4o`, `gpt-3.5-turbo`).   |
+| `temperature`  | `float`  | `0.7`        | Controls randomness (`0.0` = strict, `1.0` = creative).      |
+| `maxTokens`    | `int`    | `1000`       | The response length limit in tokens.                         |
+| `topP`         | `float`  | `1.0`        | Sampling parameter (`0.0`–`1.0`).                            |
+| `apiKey`       | `string` | `.env value` | Overrides the default API key.                               |
+| `retries`      | `int`    | `3`          | Number of retry attempts on failure.                         |
+
+---
 
 ---
 
 ## 📄 License
 
-MIT
+This package is licensed under the MIT License.
