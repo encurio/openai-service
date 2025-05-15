@@ -152,32 +152,54 @@ $response = OpenAI::completion([
 ]);
 ```
 
-### 2️⃣ Using an OpenAI Assistant (with Tools)
+### 2️⃣ Using Conversation Threads
+
+Ein Beispiel, wie man mit Konversations-Threads interagiert, statt die `assistant()`-Methode direkt zu nutzen:
 
 ```php
 use Encurio\OpenAIService\Facades\OpenAI;
 
-$messages = [
-    ['role' => 'system', 'content' => 'You are a calculator.'],
-    ['role' => 'user', 'content' => 'What is 14 * 7?']
-];
+// 1. Neuen Thread anlegen
+$threadId = OpenAI::createThread();
 
-$tools = ['calculator'];
-$toolHandlers = [
-    'calculator' => fn($input) => CalculatorService::calculate($input)
-];
+// 2. Benutzer-Nachricht hinzufügen
+OpenAI::appendMessageToThread($threadId, [
+    ['role' => 'user', 'content' => 'Can you calculate 14 * 7?']
+]);
 
-$response = OpenAI::assistant(
+// 3. Assistant-Run starten mit Tools
+$runId = OpenAI::startRun(
+    threadId:    $threadId,
     assistantId: 'asst_123456789',
-    messages: $messages,
-    tools: $tools,
-    toolHandlers: $toolHandlers,
-    model: 'gpt-4o'
+    model:       'gpt-4o',
+    tools:       ['calculator'],
+    toolHandlers:[
+        'calculator' => fn($input) => CalculatorService::calculate($input),
+    ]
 );
-echo $response['choices'][0]['message']['content'];
+
+// 4. Warten bis der Run abgeschlossen ist
+OpenAI::pollUntilRunComplete(threadId: $threadId, runId: $runId);
+
+// 4b. Polling und automatische Tool-Ausführung
+$runResult = OpenAI::pollAndSubmitToolCalls(
+    threadId:    $threadId,
+    runId:       $runId,
+    toolHandlers:[
+        'calculator' => fn($input) => CalculatorService::calculate($input),
+    ]
+);
+
+// 5. Alle Nachrichten aus dem Run abrufen
+$messages = $runResult['messages'];
+($threadId);
+
+// 6. Antwort des Assistants ausgeben
+$assistantMsg = collect($messages)->firstWhere('role', 'assistant');
+echo $assistantMsg['content'];
 ```
 
-### 3️⃣ Generating Embeddings
+### 3️⃣ Generating Embeddings Generating Embeddings
 
 ```php
 use Encurio\OpenAIService\Facades\OpenAI;
