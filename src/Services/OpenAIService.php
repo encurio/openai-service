@@ -154,6 +154,49 @@ class OpenAIService
         ]);
     }
 
+        /**
+     * Generate images via OpenAI Images API.
+     *
+     * @param  array<string,mixed> $opts {
+     *     @type string         $prompt            Required. Text prompt for the image.
+     *     @type string|null     $model            Optional. Defaults to 'gpt-image-1'.
+     *     @type int|null        $n                Optional. Defaults to 1.
+     *     @type string|null     $size             Optional. Defaults to '1024x1024'.
+     *     @type string|null     $response_format  Optional. 'url' or 'b64_json'. Defaults to 'url'.
+     *     @type string|null     $api_key          Optional. Override key (uses completions key by default).
+     *     @type int|null        $retries          Optional. Override retries.
+     * }
+     * @return array|null         OpenAI JSON response or null
+     * @throws Exception on missing params
+     */
+    public function image(array $opts): ?array
+    {
+        $cfg = array_merge([
+            'model'            => 'gpt-image-1',   // default model for images
+            'prompt'           => '',
+            'n'                => 1,
+            'size'             => '1024x1024',
+            'response_format'  => 'url',
+            'api_key'          => null,
+            'retries'          => null,
+        ], $opts);
+    
+        if (!is_string($cfg['prompt']) || $cfg['prompt'] === '') {
+            throw new Exception('Missing or invalid "prompt" for image().');
+        }
+    
+        return $this->requestOpenAI([
+            'type'             => 'images',
+            'model'            => $cfg['model'],
+            'prompt'           => $cfg['prompt'],
+            'n'                => $cfg['n'],
+            'size'             => $cfg['size'],
+            'response_format'  => $cfg['response_format'],
+            'api_key'          => $cfg['api_key'],
+            'retries'          => $cfg['retries'],
+        ]);
+    }
+
     /**
      * Core generic requester for non-thread types.
      *
