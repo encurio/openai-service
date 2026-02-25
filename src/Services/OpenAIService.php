@@ -44,6 +44,7 @@ class OpenAIService
     private string $baseUrlModerations;
     private string $baseUrlImages;
     private string $baseUrlThreads;
+    private string $baseUrlFiles;
 
     private ?string $projectApiKey = null;
 
@@ -88,6 +89,10 @@ class OpenAIService
             'openai.endpoints.threads',
             'https://api.openai.com/v1/threads'
         );
+        $this->baseUrlFiles       = config(
+            'openai.endpoints.files',
+            'https://api.openai.com/v1/files'
+        );
     }
 
     /**
@@ -115,11 +120,12 @@ class OpenAIService
      * Shortcut for a chat completion.
      *
      * @param  array<string,mixed> $opts {
-     *     @type array<int,array{role:string,content:string}> $messages    messages list
+     *     @type array<int,array{role:string,content:string|array}> $messages    messages list
      *     @type string|null    $model       model name
      *     @type float          $temperature temperature
      *     @type int            $max_tokens  max tokens
      *     @type float          $top_p       nucleus sampling
+     *     @type array|null     $response_format response format
      *     @type string|null    $api_key     override key
      *     @type int|null       $retries     override retries
      * }
@@ -130,12 +136,13 @@ class OpenAIService
     {
         // fill defaults from config/openai.php
         $defaults = [
-            'model'       => config('openai.defaults.model', 'gpt-4o-mini'),
-            'temperature' => config('openai.defaults.temperature', 0.7),
-            'max_tokens'  => config('openai.defaults.max_tokens', 1000),
-            'top_p'       => config('openai.defaults.top_p', 1.0),
-            'api_key'     => $apiKey = (!empty($params['api_key']) ? $params['api_key'] : (!empty($this->projectApiKey) ? $this->projectApiKey : $this->keyCompletions)),
-            'retries'     => $this->retries,
+            'model'           => config('openai.defaults.model', 'gpt-4o-mini'),
+            'temperature'     => config('openai.defaults.temperature', 0.7),
+            'max_tokens'      => config('openai.defaults.max_tokens', 1000),
+            'top_p'           => config('openai.defaults.top_p', 1.0),
+            'response_format' => null,
+            'api_key'         => (!empty($this->projectApiKey) ? $this->projectApiKey : $this->keyCompletions),
+            'retries'         => $this->retries,
         ];
         $cfg = array_merge($defaults, $opts);
 
@@ -143,16 +150,22 @@ class OpenAIService
             throw new Exception('Missing or invalid "messages" for completion().');
         }
 
-        return $this->requestOpenAI([
+        $params = [
             'type'        => 'completion',
             'messages'    => $cfg['messages'],
             'model'       => $cfg['model'],
             'temperature' => $cfg['temperature'],
             'max_tokens'  => $cfg['max_tokens'],
             'top_p'       => $cfg['top_p'],
-            'api_key'     => $apiKey = (!empty($params['api_key']) ? $params['api_key'] : (!empty($this->projectApiKey) ? $this->projectApiKey : $this->keyCompletions)),
+            'api_key'     => $cfg['api_key'],
             'retries'     => $cfg['retries'],
-        ]);
+        ];
+
+        if (!empty($cfg['response_format'])) {
+            $params['response_format'] = $cfg['response_format'];
+        }
+
+        return $this->requestOpenAI($params);
     }
 
         /**
@@ -324,24 +337,61 @@ class OpenAIService
     }
 
     /**
-     * Start a run on a thread (with optional tools).
+     * Upload a file to OpenAI.
+     *
+     * @param  string  $filePath   Absolute path to the local file
+     * @param  string  $purpose    e.g. 'vision', 'assistants', 'fine-tune'
+     * @return string               The OpenAI file_id
+     * @throws Exception
+     */
+    public function uploadFile(string $filePath, string $purpose = 'vision'): string
+    {
+        if (!file_exists($filePath)) {
+            throw new Exception("File not found: {$filePath}");
+        }
+
+        $resp = Http::withToken($this->_getAssistantKey())
+            ->attach('file', file_get_contents($filePath), basename($filePath))
+            ->post($this->baseUrlFiles, [
+                'purpose' => $purpose,
+            ])
+            ->throw()
+            ->json();
+
+        return $resp['id'] ?? throw new Exception('uploadFile: no id returned');
+    }
+
+    /**
+     * Start a run on a thread (with optional tools and response_format).
      *
      * @param string $threadId
      * @param string $assistantId
      * @param string $model
      * @param array  $tools
+     * @param array|null $responseFormat e.g. ['type' => 'json_object'] or Structured Output schema
      * @return string               run_id
      */
-    public function startRun(string $threadId, string $assistantId, string $model, array $tools = []): string
-    {
+    public function startRun(
+        string $threadId,
+        string $assistantId,
+        string $model,
+        array $tools = [],
+        ?array $responseFormat = null
+    ): string {
+        $payload = [
+            'assistant_id'    => $assistantId,
+            'model'           => $model,
+            'tools'           => $tools,
+            'tool_choice'     => 'auto',
+        ];
+
+        if ($responseFormat) {
+            $payload['response_format'] = $responseFormat;
+        }
+
         $resp = Http::withToken($this->_getAssistantKey())
             ->withHeaders(self::ASSISTANTS_V2_HEADER)
-            ->post("{$this->baseUrlThreads}/{$threadId}/runs", [
-                'assistant_id'    => $assistantId,
-                'model'           => $model,
-                'tools'           => $tools,
-                'tool_choice'     => 'auto',
-            ])
+            ->post("{$this->baseUrlThreads}/{$threadId}/runs", $payload)
             ->throw()
             ->json();
 
@@ -417,16 +467,28 @@ class OpenAIService
      * @param string $threadId
      * @param string $runId
      * @param array<string,callable> $toolHandlers
+     * @param string|null $assistantId
+     * @param string|null $model
+     * @param array $tools
+     * @param array|null $responseFormat
      * @return array
-     * @throws OpenAIRunFailedException|RuntimeException on failure or timeout
+     * @throws OpenAIRunFailedException|\RuntimeException on failure or timeout
      */
-    public function pollUntilRunComplete(string $threadId, string $runId, array $toolHandlers = []): array
+    public function pollUntilRunComplete(
+        string $threadId,
+        string $runId,
+        array $toolHandlers = [],
+        ?string $assistantId = null,
+        ?string $model = null,
+        array $tools = [],
+        ?array $responseFormat = null
+    ): array
     {
         $this->pollResponse = [];
         $attempts = 0;
-        $maxAttempts = 60;
+        $maxAttempts = 100; // Increased from 60
         $retryAttempts = 0;
-        $maxRetryAttempts = 3;
+        $maxRetryAttempts = 5; // Increased from 3
 
         do {
             sleep(3);
@@ -445,7 +507,7 @@ class OpenAIService
             }
 
             Cache::put('art_recognition_status', [
-                'status' => "AI Assitant Status: $status - ($attempts)",
+                'status' => "AI Assistant Status: $status - ($attempts)",
                 'run_id' => $runId,
             ], now()->addMinutes(10));
 
@@ -456,8 +518,8 @@ class OpenAIService
                 $context = [
                     'run_id' => $runId,
                     'thread_id' => $threadId,
-                    'assistant_id' => $resp['assistant_id'] ?? null,
-                    'model' => $resp['model'] ?? null,
+                    'assistant_id' => $resp['assistant_id'] ?? $assistantId,
+                    'model' => $resp['model'] ?? $model,
                     'last_error' => $lastError,
                     'incomplete_details' => $resp['incomplete_details'] ?? null,
                     'response_payload' => $resp,
@@ -466,15 +528,30 @@ class OpenAIService
                 if (in_array($errorCode, ['server_error', 'rate_limit_exceeded'], true) && $retryAttempts < $maxRetryAttempts) {
                     $retryAttempts++;
                     $backoff = match ($retryAttempts) {
-                        1 => 300,
-                        2 => 800,
-                        3 => 1500,
+                        1 => 2,
+                        2 => 5,
+                        3 => 10,
+                        4 => 20,
+                        5 => 30,
                         default => 0,
                     };
 
-                    Log::warning("OpenAI run transient error ($errorCode), retrying in {$backoff}ms...", $context);
-                    usleep($backoff * 1000);
-                    continue;
+                    Log::warning("OpenAI run transient error ($errorCode), restarting run in {$backoff}s... (Attempt $retryAttempts/$maxRetryAttempts)", $context);
+                    sleep($backoff);
+
+                    // If we have the necessary info, start a NEW run instead of just polling the failed one
+                    $aId = $resp['assistant_id'] ?? $assistantId;
+                    $m = $resp['model'] ?? $model;
+
+                    if ($aId && $m) {
+                        try {
+                            $runId = $this->startRun($threadId, $aId, $m, $tools, $responseFormat);
+                            $attempts = 0; // Reset polling attempts for the new run
+                            continue;
+                        } catch (Exception $e) {
+                            Log::error("Failed to restart OpenAI run: " . $e->getMessage(), $context);
+                        }
+                    }
                 }
 
                 Log::error('OpenAI run failed', $context);
@@ -551,7 +628,7 @@ class OpenAIService
         $tId = $this->createThread();
         $this->appendMessageToThread($tId, $messages);
         $rId = $this->startRun($tId, $assistantId, $model, $tools);
-        $this->pollAndSubmitToolCalls($tId, $rId, $toolHandlers);
+        $this->pollUntilRunComplete($tId, $rId, $toolHandlers, $assistantId, $model, $tools);
         return $this->getThreadMessages($tId);
     }
 
