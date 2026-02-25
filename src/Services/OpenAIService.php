@@ -6,6 +6,7 @@ namespace Encurio\OpenAIService\Services;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Encurio\OpenAIService\Exceptions\OpenAIRunFailedException;
 use Exception;
 
 /**
@@ -417,13 +418,15 @@ class OpenAIService
      * @param string $runId
      * @param array<string,callable> $toolHandlers
      * @return array
-     * @throws \RuntimeException on failure or timeout
+     * @throws OpenAIRunFailedException|RuntimeException on failure or timeout
      */
     public function pollUntilRunComplete(string $threadId, string $runId, array $toolHandlers = []): array
     {
         $this->pollResponse = [];
         $attempts = 0;
         $maxAttempts = 60;
+        $retryAttempts = 0;
+        $maxRetryAttempts = 3;
 
         do {
             sleep(3);
@@ -447,7 +450,35 @@ class OpenAIService
             ], now()->addMinutes(10));
 
             if (in_array($status, ['failed', 'cancelled', 'expired'], true)) {
-                throw new \RuntimeException("Run failed or was cancelled: $status " . var_export($resp, true));
+                $lastError = $resp['last_error'] ?? null;
+                $errorCode = $lastError['code'] ?? null;
+
+                $context = [
+                    'run_id' => $runId,
+                    'thread_id' => $threadId,
+                    'assistant_id' => $resp['assistant_id'] ?? null,
+                    'model' => $resp['model'] ?? null,
+                    'last_error' => $lastError,
+                    'incomplete_details' => $resp['incomplete_details'] ?? null,
+                    'response_payload' => $resp,
+                ];
+
+                if (in_array($errorCode, ['server_error', 'rate_limit_exceeded'], true) && $retryAttempts < $maxRetryAttempts) {
+                    $retryAttempts++;
+                    $backoff = match ($retryAttempts) {
+                        1 => 300,
+                        2 => 800,
+                        3 => 1500,
+                        default => 0,
+                    };
+
+                    Log::warning("OpenAI run transient error ($errorCode), retrying in {$backoff}ms...", $context);
+                    usleep($backoff * 1000);
+                    continue;
+                }
+
+                Log::error('OpenAI run failed', $context);
+                throw new OpenAIRunFailedException("OpenAI run failed with status: $status", $context);
             }
 
             $this->pollResponse = $resp;
