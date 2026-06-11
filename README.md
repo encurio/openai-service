@@ -1,219 +1,149 @@
-# 🚀 OpenAI Service for Laravel (`encurio/openai-service`)
+# OpenAI Service for Laravel (`encurio/openai-service`)
 
-This package provides a flexible **OpenAI Service** for Laravel, allowing seamless integration with OpenAI’s API.
-Supports **Assistants**, **Completions**, **Embeddings**, **Moderations**, **Images**, and **Tool Integrations**.
+A Laravel package for working with OpenAI from application services.
 
----
+The **Responses API** is now the recommended default for new implementations. Legacy **Chat Completions** and **Assistants v2 Threads/Runs** remain available for backward compatibility, but new projects should not build around Assistants/Threads.
 
-## 📌 Features
+## Features
 
-* ✅ **Assistants & Completions** – Structured AI assistants or direct text completions.
-* ✅ **Embeddings & Moderations** – Generate vector embeddings and perform content moderation.
-* ✅ **Dynamic API Key Handling** – Uses default keys from `.env` but allows per-request overrides.
-* ✅ **Flexible Model Selection** – Defaults to `gpt-4o`, but any OpenAI model can be used.
-* ✅ **Handles Images & Text** – Send both textual prompts and images for analysis.
-* ✅ **Tool Integration** – Pass arrays of `tools` and `toolHandlers` to extend assistant capabilities.
+* Responses API support for text, structured output, tools, conversation references, and model calls.
+* Conversation helper methods for the current OpenAI conversation model.
+* Legacy Chat Completions support.
+* Legacy Assistants v2 Threads/Runs support, marked as deprecated in code.
+* Embeddings, Moderations, Images, and Files helpers.
+* Per-request API key override through `setProjectApiKey()` or request options.
 
----
-
-## 📦 Installation
+## Installation
 
 ```bash
 composer require encurio/openai-service
 ```
 
----
+## Configuration
 
-## ⚙️ Configuration
+Publish the config file when you want to customize defaults:
 
-### 1️⃣ Set OpenAI API Keys in `.env`
+```bash
+php artisan vendor:publish --tag=openai-config
+```
+
+Recommended `.env` configuration:
 
 ```env
-OPENAI_API_KEY_COMPLETIONS=your_openai_completions_key
-OPENAI_API_KEY_ASSISTANTS=your_openai_assistants_key
+OPENAI_API_KEY=your_openai_project_key
+OPENAI_DEFAULT_MODEL=gpt-4.1-mini
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+OPENAI_IMAGE_MODEL=gpt-image-1
+OPENAI_RETRIES=3
+OPENAI_TIMEOUT=60
 ```
 
-### 2️⃣ Publish Config File (Optional)
+Backward-compatible keys still work, but should not be used for new projects:
 
-```bash
-php artisan vendor:publish --tag=openai-config
+```env
+OPENAI_API_KEY_COMPLETIONS=legacy_key
+OPENAI_API_KEY_ASSISTANTS=legacy_key
 ```
 
-This will generate `config/openai.php`:
-
-````php
-<?php
-
-declare(strict_types=1);
-
-return [
-    /*
-    |--------------------------------------------------------------------------
-    | OpenAI API Keys
-    |--------------------------------------------------------------------------
-    | Define your API keys for completions and assistants.
-    */
-    'keys' => [
-        'completions' => env('OPENAI_API_KEY_COMPLETIONS', ''),
-        'assistants'  => env('OPENAI_API_KEY_ASSISTANTS', ''),
-    ],
-
-    /*
-    |--------------------------------------------------------------------------
-    | Request Settings
-    |--------------------------------------------------------------------------
-    | Retries and timeout for API calls.
-    */
-    'retries' => env('OPENAI_RETRIES', 3),
-    'timeout' => env('OPENAI_TIMEOUT', 60),
-
-    /*
-    |--------------------------------------------------------------------------
-    | Endpoints
-    |--------------------------------------------------------------------------
-    | Override base URLs if needed.
-    */
-    'endpoints' => [
-        'completions' => env(
-            'OPENAI_URL_COMPLETIONS',
-            'https://api.openai.com/v1/chat/completions'
-        ),
-        'threads'     => env(
-            'OPENAI_URL_THREADS',
-            'https://api.openai.com/v1/threads'
-        ),
-        'embeddings'  => env(
-            'OPENAI_URL_EMBEDDINGS',
-            'https://api.openai.com/v1/embeddings'
-        ),
-        'moderations' => env(
-            'OPENAI_URL_MODERATIONS',
-            'https://api.openai.com/v1/moderations'
-        ),
-        'images'      => env(
-            'OPENAI_URL_IMAGES',
-            'https://api.openai.com/v1/images/generations'
-        ),
-    ],
-];
-```bash
-php artisan vendor:publish --tag=openai-config
-````
-
-> This will generate the `config/openai.php` file in your project, which you can customize:
-
-```php
-<?php
-
-declare(strict_types=1);
-
-return [
-    /**
-     * Default OpenAI API keys for various features
-     */
-    'keys' => [
-        'completions' => env('OPENAI_API_KEY_COMPLETIONS'),
-        'assistants'  => env('OPENAI_API_KEY_ASSISTANTS'),
-    ],
-
-    /**
-     * Number of automatic retry attempts on failure
-     */
-    'retries' => env('OPENAI_RETRIES', 3),
-];
-```
-
----
-
-## 🛠️ Usage Examples
-
-### 1️⃣ Basic Completion Request (Text Generation)
+## Current recommended usage: Responses API
 
 ```php
 use Encurio\OpenAIService\Facades\OpenAI;
 
-$response = OpenAI::requestOpenAI([
-    'type' => 'completion',
-    'model' => 'gpt-4o',
-    'messages' => [
-        ['role' => 'user', 'content' => 'Write a short SEO-friendly product description.']
-    ],
+$response = OpenAI::response([
+    'model' => 'gpt-4.1-mini',
+    'input' => 'Write a short SEO-friendly product description for a reusable coffee filter.',
+    'instructions' => 'Write concise, factual ecommerce copy.',
+    'max_output_tokens' => 300,
 ]);
-echo $response['choices'][0]['message']['content'];
 
-// Or using the completion shortcut:
-$response = OpenAI::completion([
-    'messages' => [
-        ['role' => 'user', 'content' => 'Tell me a joke.']
-    ],
-    'model' => 'gpt-3.5-turbo',
-    'temperature' => 0.9,
-    'maxTokens' => 200
-]);
+print_r($response);
 ```
 
-### 2️⃣ Using Conversation Threads
-
-Ein Beispiel, wie man mit Konversations-Threads interagiert, statt die `assistant()`-Methode direkt zu nutzen:
+## Structured output
 
 ```php
 use Encurio\OpenAIService\Facades\OpenAI;
 
-// 1. Neuen Thread anlegen
-$threadId = OpenAI::createThread();
-
-// 2. Benutzer-Nachricht hinzufügen
-OpenAI::appendMessageToThread($threadId, [
-    ['role' => 'user', 'content' => 'Can you calculate 14 * 7?']
+$response = OpenAI::response([
+    'model' => 'gpt-4.1-mini',
+    'input' => 'Extract the product name, material, and key benefit from: Stainless steel reusable coffee filter, dishwasher-safe, reduces paper waste.',
+    'text' => [
+        'format' => [
+            'type' => 'json_schema',
+            'name' => 'product_summary',
+            'schema' => [
+                'type' => 'object',
+                'additionalProperties' => false,
+                'properties' => [
+                    'product_name' => ['type' => 'string'],
+                    'material' => ['type' => 'string'],
+                    'key_benefit' => ['type' => 'string'],
+                ],
+                'required' => ['product_name', 'material', 'key_benefit'],
+            ],
+        ],
+    ],
 ]);
 
-// 3. Assistant-Run starten mit Tools
-$runId = OpenAI::startRun(
-    threadId:    $threadId,
-    assistantId: 'asst_123456789',
-    model:       'gpt-4o',
-    tools:       ['calculator'],
-    toolHandlers:[
-        'calculator' => fn($input) => CalculatorService::calculate($input),
-    ]
-);
-
-// 4. Warten bis der Run abgeschlossen ist
-OpenAI::pollUntilRunComplete(threadId: $threadId, runId: $runId);
-
-// 4b. Polling und automatische Tool-Ausführung
-$runResult = OpenAI::pollAndSubmitToolCalls(
-    threadId:    $threadId,
-    runId:       $runId,
-    toolHandlers:[
-        'calculator' => fn($input) => CalculatorService::calculate($input),
-    ]
-);
-
-// 5. Alle Nachrichten aus dem Run abrufen
-$messages = $runResult['messages'];
-($threadId);
-
-// 6. Antwort des Assistants ausgeben
-$assistantMsg = collect($messages)->firstWhere('role', 'assistant');
-echo $assistantMsg['content'];
+print_r($response);
 ```
 
-### 3️⃣ Generating Embeddings Generating Embeddings
+## Conversations
+
+```php
+use Encurio\OpenAIService\Facades\OpenAI;
+
+$conversationId = OpenAI::createConversation();
+
+OpenAI::addConversationItem($conversationId, [
+    'type' => 'message',
+    'role' => 'user',
+    'content' => [
+        ['type' => 'input_text', 'text' => 'Remember that this customer prefers German invoices.'],
+    ],
+]);
+
+$response = OpenAI::response([
+    'model' => 'gpt-4.1-mini',
+    'conversation' => $conversationId,
+    'input' => 'Create the next customer support reply.',
+]);
+```
+
+## Images
+
+```php
+use Encurio\OpenAIService\Facades\OpenAI;
+
+$response = OpenAI::image([
+    'prompt' => 'A clean ecommerce product photo of a reusable stainless steel coffee filter on a white background.',
+    'model' => 'gpt-image-1',
+    'size' => '1024x1024',
+    'quality' => 'high',
+    'output_format' => 'png',
+]);
+
+print_r($response);
+```
+
+For GPT image models, the package no longer sends `response_format=url` by default. Pass `response_format` only when you intentionally use an older image model that supports it.
+
+## Embeddings
 
 ```php
 use Encurio\OpenAIService\Facades\OpenAI;
 
 $response = OpenAI::requestOpenAI([
     'type' => 'embedding',
-    'model' => 'text-embedding-ada-002',
+    'model' => 'text-embedding-3-small',
     'input' => ['Your text to embed here'],
 ]);
 
 print_r($response['data']);
 ```
 
-### 4️⃣ Content Moderation
+## Moderations
 
 ```php
 use Encurio\OpenAIService\Facades\OpenAI;
@@ -226,52 +156,52 @@ $response = OpenAI::requestOpenAI([
 print_r($response['results']);
 ```
 
-### 5️⃣ Sending an Image for Analysis
+## Legacy Chat Completions
+
+`completion()` and `requestOpenAI(['type' => 'completion', ...])` remain available for existing projects.
 
 ```php
 use Encurio\OpenAIService\Facades\OpenAI;
 
-$imageUrl = "https://example.com/sample.jpg";
-
-$response = OpenAI::requestOpenAI([
-    'type' => 'completion', // or 'assistant'
-    'model' => 'gpt-4o',
+$response = OpenAI::completion([
+    'model' => 'gpt-4.1-mini',
     'messages' => [
-        ['role' => 'user', 'content' => [
-            ['type' => 'text', 'text' => 'Describe this image.'],
-            ['type' => 'image_url', 'image_url' => [
-                'url' => $imageUrl,
-                'detail' => 'high'
-            ]]
-        ]]
+        ['role' => 'user', 'content' => 'Tell me a joke.'],
     ],
+    'temperature' => 0.9,
+    'max_tokens' => 200,
 ]);
 
-echo $response['choices'][0]['message']['content'];
+print_r($response);
 ```
 
----
+## Legacy Assistants v2 Threads/Runs
 
-## 🔧 Available Parameters
+These methods remain in the package for backward compatibility, but are deprecated in code:
 
-| Parameter      | Type     | Default      | Description                                                  |
-| -------------- | -------- | ------------ | ------------------------------------------------------------ |
-| `type`         | `string` | `completion` | One of `completion`, `assistant`, `embedding`, `moderation`. |
-| `messages`     | `array`  | Required     | List of chat messages (`system`, `user`, `assistant`).       |
-| `tools`        | `array`  | `[]`         | Names of tools to enable in an assistant session.            |
-| `toolHandlers` | `array`  | `[]`         | Associative array of tool names to handler callbacks.        |
-| `assistantId`  | `string` | `null`       | The ID of an OpenAI Assistant (if `type` is `assistant`).    |
-| `model`        | `string` | `gpt-4o`     | The OpenAI model to use (e.g., `gpt-4o`, `gpt-3.5-turbo`).   |
-| `temperature`  | `float`  | `0.7`        | Controls randomness (`0.0` = strict, `1.0` = creative).      |
-| `maxTokens`    | `int`    | `1000`       | The response length limit in tokens.                         |
-| `topP`         | `float`  | `1.0`        | Sampling parameter (`0.0`–`1.0`).                            |
-| `apiKey`       | `string` | `.env value` | Overrides the default API key.                               |
-| `retries`      | `int`    | `3`          | Number of retry attempts on failure.                         |
+* `createThread()`
+* `appendMessageToThread()`
+* `startRun()`
+* `pollUntilRunComplete()`
+* `pollAndSubmitToolCalls()`
+* `getThreadMessages()`
+* `runThread()`
 
----
+Use `response()`, `createConversation()`, `addConversationItem()`, and `listConversationItems()` for new implementations.
 
----
+## Error handling
 
-## 📄 License
+New Responses API methods throw `OpenAIRequestException` on HTTP or API failure. The exception exposes:
+
+```php
+$exception->context();
+$exception->status();
+$exception->responseBody();
+$exception->requestId();
+```
+
+Legacy `requestOpenAI()` keeps nullable failure behavior for backward compatibility.
+
+## License
 
 This package is licensed under the MIT License.
