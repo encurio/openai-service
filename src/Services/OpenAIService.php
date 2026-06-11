@@ -15,7 +15,8 @@ use Illuminate\Support\Facades\Log;
  * Universal OpenAI Service.
  *
  * The Responses API is the primary API for new implementations.
- * Chat Completions and Assistants v2 Threads/Runs remain available for backward compatibility.
+ * completion() is intentionally an alias to the Responses API.
+ * Use chatCompletion() only when a project explicitly needs the legacy Chat Completions endpoint.
  */
 class OpenAIService
 {
@@ -120,28 +121,68 @@ class OpenAIService
      */
     public function response(array $opts): array
     {
-        $payload = $opts;
-        $payload['model'] = $payload['model'] ?? config('openai.defaults.model', 'gpt-4.1-mini');
-
-        if (!isset($payload['input'])) {
-            if (isset($payload['messages'])) {
-                $payload['input'] = $payload['messages'];
-                unset($payload['messages']);
-            } else {
-                throw new Exception('Missing "input" for response().');
-            }
-        }
-
-        if (isset($payload['max_tokens']) && !isset($payload['max_output_tokens'])) {
-            $payload['max_output_tokens'] = $payload['max_tokens'];
-            unset($payload['max_tokens']);
-        }
+        $payload = $this->normalizeResponseOptions($opts);
 
         $apiKey = $payload['api_key'] ?? null;
         $retries = isset($payload['retries']) && is_int($payload['retries']) ? $payload['retries'] : $this->retries;
         unset($payload['api_key'], $payload['retries']);
 
         return $this->createResponse($payload, is_string($apiKey) ? $apiKey : null, $retries);
+    }
+
+    /**
+     * completion() is a compatibility alias for Responses API.
+     *
+     * @param array<string,mixed> $opts
+     * @return array<string,mixed>|null
+     * @throws Exception
+     */
+    public function completion(array $opts): ?array
+    {
+        return $this->responseFromCompletionOptions($opts);
+    }
+
+    /**
+     * Explicit legacy Chat Completions call.
+     * Use this only when a consuming project truly needs /v1/chat/completions.
+     *
+     * @param array<string,mixed> $opts
+     * @return array<string,mixed>|null
+     * @throws Exception
+     */
+    public function chatCompletion(array $opts): ?array
+    {
+        $defaults = [
+            'model' => config('openai.defaults.model', 'gpt-4.1-mini'),
+            'temperature' => config('openai.defaults.temperature', 0.7),
+            'max_tokens' => config('openai.defaults.max_tokens', 1000),
+            'top_p' => config('openai.defaults.top_p', 1.0),
+            'response_format' => null,
+            'api_key' => $this->getCompletionKey(),
+            'retries' => $this->retries,
+        ];
+        $cfg = array_merge($defaults, $opts);
+
+        if (empty($cfg['messages']) || !is_array($cfg['messages'])) {
+            throw new Exception('Missing or invalid "messages" for chatCompletion().');
+        }
+
+        $params = [
+            'type' => 'chat_completion',
+            'messages' => $cfg['messages'],
+            'model' => $cfg['model'],
+            'temperature' => $cfg['temperature'],
+            'max_tokens' => $cfg['max_tokens'],
+            'top_p' => $cfg['top_p'],
+            'api_key' => $cfg['api_key'],
+            'retries' => $cfg['retries'],
+        ];
+
+        if (!empty($cfg['response_format'])) {
+            $params['response_format'] = $cfg['response_format'];
+        }
+
+        return $this->requestOpenAI($params);
     }
 
     /**
@@ -244,48 +285,6 @@ class OpenAIService
     }
 
     /**
-     * Legacy Chat Completions shortcut.
-     *
-     * @param array<string,mixed> $opts
-     * @return array<string,mixed>|null
-     * @throws Exception on missing params/key
-     */
-    public function completion(array $opts): ?array
-    {
-        $defaults = [
-            'model' => config('openai.defaults.model', 'gpt-4.1-mini'),
-            'temperature' => config('openai.defaults.temperature', 0.7),
-            'max_tokens' => config('openai.defaults.max_tokens', 1000),
-            'top_p' => config('openai.defaults.top_p', 1.0),
-            'response_format' => null,
-            'api_key' => $this->getCompletionKey(),
-            'retries' => $this->retries,
-        ];
-        $cfg = array_merge($defaults, $opts);
-
-        if (empty($cfg['messages']) || !is_array($cfg['messages'])) {
-            throw new Exception('Missing or invalid "messages" for completion().');
-        }
-
-        $params = [
-            'type' => 'completion',
-            'messages' => $cfg['messages'],
-            'model' => $cfg['model'],
-            'temperature' => $cfg['temperature'],
-            'max_tokens' => $cfg['max_tokens'],
-            'top_p' => $cfg['top_p'],
-            'api_key' => $cfg['api_key'],
-            'retries' => $cfg['retries'],
-        ];
-
-        if (!empty($cfg['response_format'])) {
-            $params['response_format'] = $cfg['response_format'];
-        }
-
-        return $this->requestOpenAI($params);
-    }
-
-    /**
      * Generate images via OpenAI Images API.
      *
      * GPT image models do not default to response_format=url. The response format is only sent when explicitly provided.
@@ -333,7 +332,10 @@ class OpenAIService
     }
 
     /**
-     * Core generic requester for legacy non-thread types.
+     * Core generic requester.
+     *
+     * type=completion is intentionally mapped to the Responses API.
+     * type=chat_completion is the explicit legacy Chat Completions endpoint.
      *
      * @param array<string,mixed> $params
      * @return array<string,mixed>|null
@@ -342,11 +344,21 @@ class OpenAIService
     public function requestOpenAI(array $params): ?array
     {
         $type = $params['type'] ?? 'completion';
+
+        if ($type === 'completion') {
+            unset($params['type']);
+            return $this->responseFromCompletionOptions($params);
+        }
+
+        if ($type === 'response') {
+            unset($params['type']);
+            return $this->response($params);
+        }
+
         $apiKey = $params['api_key']
             ?? $this->projectApiKey
             ?? match ($type) {
-                'response' => $this->getDefaultKey(),
-                'completion', 'images' => $this->getCompletionKey(),
+                'chat_completion', 'images' => $this->getCompletionKey(),
                 'embedding', 'moderation' => $this->getAssistantKey(),
                 default => throw new Exception("Unknown request type \"$type\"."),
             };
@@ -360,8 +372,7 @@ class OpenAIService
         unset($params['type'], $params['api_key'], $params['retries']);
 
         $url = match ($type) {
-            'response' => $this->baseUrlResponses,
-            'completion' => $this->baseUrlCompletions,
+            'chat_completion' => $this->baseUrlCompletions,
             'embedding' => $this->baseUrlEmbeddings,
             'moderation' => $this->baseUrlModerations,
             'images' => $this->baseUrlImages,
@@ -369,6 +380,170 @@ class OpenAIService
         };
 
         return $this->sendRequest((string) $apiKey, $url, $params, $retries);
+    }
+
+    /**
+     * @param array<string,mixed> $opts
+     * @return array<string,mixed>
+     * @throws OpenAIRequestException
+     */
+    private function responseFromCompletionOptions(array $opts): array
+    {
+        $payload = $this->normalizeResponseOptions($opts);
+
+        return $this->sendRequestStrict(
+            isset($opts['api_key']) && is_string($opts['api_key']) ? $opts['api_key'] : $this->getDefaultKey(),
+            $this->baseUrlResponses,
+            $payload,
+            isset($opts['retries']) && is_int($opts['retries']) ? $opts['retries'] : $this->retries
+        );
+    }
+
+    /**
+     * @param array<string,mixed> $opts
+     * @return array<string,mixed>
+     */
+    private function normalizeResponseOptions(array $opts): array
+    {
+        $payload = $opts;
+        $payload['model'] = $payload['model'] ?? config('openai.defaults.model', 'gpt-4.1-mini');
+
+        if (isset($payload['messages']) && !isset($payload['input'])) {
+            $mapped = $this->mapMessagesToResponseInput($payload['messages']);
+            $payload['input'] = $mapped['input'];
+
+            if (!isset($payload['instructions']) && $mapped['instructions'] !== null) {
+                $payload['instructions'] = $mapped['instructions'];
+            }
+
+            unset($payload['messages']);
+        }
+
+        if (!isset($payload['input'])) {
+            throw new Exception('Missing "input" for Responses API call. Pass input or messages.');
+        }
+
+        if (isset($payload['max_tokens']) && !isset($payload['max_output_tokens'])) {
+            $payload['max_output_tokens'] = $payload['max_tokens'];
+        }
+        unset($payload['max_tokens']);
+
+        if (isset($payload['response_format']) && !isset($payload['text']['format'])) {
+            $textFormat = $this->mapResponseFormatToTextFormat($payload['response_format']);
+            if ($textFormat !== null) {
+                $payload['text']['format'] = $textFormat;
+            }
+        }
+        unset($payload['response_format']);
+
+        return array_filter(
+            $payload,
+            static fn($value): bool => $value !== null
+        );
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $messages
+     * @return array{input:array<int,array<string,mixed>>,instructions:?string}
+     */
+    private function mapMessagesToResponseInput(array $messages): array
+    {
+        $instructions = [];
+        $input = [];
+
+        foreach ($messages as $message) {
+            $role = $message['role'] ?? 'user';
+            $content = $message['content'] ?? '';
+
+            if (in_array($role, ['system', 'developer'], true)) {
+                $instructions[] = $this->contentToPlainText($content);
+                continue;
+            }
+
+            $input[] = [
+                'role' => $role,
+                'content' => $this->normalizeResponseMessageContent($content, $role),
+            ];
+        }
+
+        return [
+            'input' => $input,
+            'instructions' => $instructions !== [] ? implode("\n\n", $instructions) : null,
+        ];
+    }
+
+    /**
+     * @param string|array<int,array<string,mixed>> $content
+     * @return string|array<int,array<string,mixed>>
+     */
+    private function normalizeResponseMessageContent(string|array $content, string $role): string|array
+    {
+        if (is_string($content)) {
+            return $content;
+        }
+
+        return array_map(
+            function (array $part) use ($role): array {
+                if (($part['type'] ?? null) === 'text') {
+                    return [
+                        'type' => $role === 'assistant' ? 'output_text' : 'input_text',
+                        'text' => (string) ($part['text'] ?? ''),
+                    ];
+                }
+
+                if (($part['type'] ?? null) === 'image_url') {
+                    return [
+                        'type' => 'input_image',
+                        'image_url' => $part['image_url']['url'] ?? $part['image_url'] ?? '',
+                        'detail' => $part['image_url']['detail'] ?? $part['detail'] ?? 'auto',
+                    ];
+                }
+
+                return $part;
+            },
+            $content
+        );
+    }
+
+    /**
+     * @param string|array<int,array<string,mixed>> $content
+     */
+    private function contentToPlainText(string|array $content): string
+    {
+        if (is_string($content)) {
+            return $content;
+        }
+
+        return implode("\n", array_map(
+            static fn(array $part): string => (string) ($part['text'] ?? ''),
+            $content
+        ));
+    }
+
+    /**
+     * @param array<string,mixed> $responseFormat
+     * @return array<string,mixed>|null
+     */
+    private function mapResponseFormatToTextFormat(array $responseFormat): ?array
+    {
+        $type = $responseFormat['type'] ?? null;
+
+        if ($type === 'json_object') {
+            return ['type' => 'json_object'];
+        }
+
+        if ($type === 'json_schema') {
+            $schema = $responseFormat['json_schema'] ?? $responseFormat;
+
+            return array_filter([
+                'type' => 'json_schema',
+                'name' => $schema['name'] ?? null,
+                'schema' => $schema['schema'] ?? null,
+                'strict' => $schema['strict'] ?? null,
+            ], static fn($value): bool => $value !== null);
+        }
+
+        return null;
     }
 
     /**
