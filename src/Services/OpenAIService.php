@@ -1,44 +1,39 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Encurio\OpenAIService\Services;
 
+use Encurio\OpenAIService\Exceptions\OpenAIRequestException;
+use Encurio\OpenAIService\Exceptions\OpenAIRunFailedException;
+use Exception;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Encurio\OpenAIService\Exceptions\OpenAIRunFailedException;
-use Exception;
 
 /**
- * Universal OpenAI Service:
+ * Universal OpenAI Service.
  *
- *  - Chat Completions (stateless)
- *  - Embeddings
- *  - Moderations
- *  - Images
- *  - Threads API (stateful Assistants + Tools)
- *
- * Config (config/openai.php) must define:
- *   keys.completions, keys.assistants,
- *   retries, timeout,
- *   endpoints.completions, .embeddings, .moderations, .images, .threads,
- *   defaults.model, .assistant_model, .temperature, .max_tokens, .top_p
+ * The Responses API is the primary API for new implementations.
+ * Chat Completions and Assistants v2 Threads/Runs remain available for backward compatibility.
  */
 class OpenAIService
 {
     /**
-     * Header for all Threads calls (Assistants API v2).
+     * Header for legacy Assistants v2 thread calls.
      */
     private const ASSISTANTS_V2_HEADER = [
         'OpenAI-Beta' => 'assistants=v2',
     ];
 
-    //––– Configuration values –––
+    private string $apiKey;
     private string $keyCompletions;
     private string $keyAssistants;
-    private int    $retries;
-    private int    $timeout;
+    private int $retries;
+    private int $timeout;
 
+    private string $baseUrlResponses;
+    private string $baseUrlConversations;
     private string $baseUrlCompletions;
     private string $baseUrlEmbeddings;
     private string $baseUrlModerations;
@@ -48,117 +43,239 @@ class OpenAIService
 
     private ?string $projectApiKey = null;
 
+    /**
+     * @var array<string,mixed>|string
+     */
     private $pollResponse = '';
 
     /**
-     * Constructor: load keys, retries, timeout and all endpoints.
-     *
-     * @throws Exception if required API keys are missing
+     * @throws Exception if no API key is configured
      */
     public function __construct()
     {
-        // Load API keys
-        $this->keyCompletions = config('openai.keys.completions', '');
-        $this->keyAssistants  = config('openai.keys.assistants', '');
-        if (empty($this->keyCompletions) || empty($this->keyAssistants)) {
-            throw new Exception('OpenAI API keys are not set in config/openai.php');
+        $this->apiKey = (string) config('openai.api_key', '');
+        $this->keyCompletions = (string) config('openai.keys.completions', $this->apiKey);
+        $this->keyAssistants = (string) config('openai.keys.assistants', $this->apiKey);
+
+        if ($this->apiKey === '' && $this->keyCompletions === '' && $this->keyAssistants === '') {
+            throw new Exception('OpenAI API key is not set in config/openai.php. Use OPENAI_API_KEY.');
         }
 
-        // Retries & timeout
-        $this->retries = config('openai.retries', 3);
-        $this->timeout = config('openai.timeout', 60);
+        $this->retries = (int) config('openai.retries', 3);
+        $this->timeout = (int) config('openai.timeout', 60);
 
-        // Endpoints
-        $this->baseUrlCompletions = config(
+        $this->baseUrlResponses = (string) config(
+            'openai.endpoints.responses',
+            'https://api.openai.com/v1/responses'
+        );
+        $this->baseUrlConversations = (string) config(
+            'openai.endpoints.conversations',
+            'https://api.openai.com/v1/conversations'
+        );
+        $this->baseUrlCompletions = (string) config(
             'openai.endpoints.completions',
             'https://api.openai.com/v1/chat/completions'
         );
-        $this->baseUrlEmbeddings  = config(
+        $this->baseUrlEmbeddings = (string) config(
             'openai.endpoints.embeddings',
             'https://api.openai.com/v1/embeddings'
         );
-        $this->baseUrlModerations = config(
+        $this->baseUrlModerations = (string) config(
             'openai.endpoints.moderations',
             'https://api.openai.com/v1/moderations'
         );
-        $this->baseUrlImages      = config(
+        $this->baseUrlImages = (string) config(
             'openai.endpoints.images',
             'https://api.openai.com/v1/images/generations'
         );
-        $this->baseUrlThreads     = config(
+        $this->baseUrlThreads = (string) config(
             'openai.endpoints.threads',
             'https://api.openai.com/v1/threads'
         );
-        $this->baseUrlFiles       = config(
+        $this->baseUrlFiles = (string) config(
             'openai.endpoints.files',
             'https://api.openai.com/v1/files'
         );
     }
 
-    /**
-     * Set an override API key for the current request cycle.
-     *
-     * @param string $apiKey
-     * @return void
-     */
     public function setProjectApiKey(string $apiKey): void
     {
         $this->projectApiKey = $apiKey;
     }
 
+    /**
+     * @return array<string,mixed>|string
+     */
     public function getPollResponse()
     {
         return $this->pollResponse;
     }
 
+    /**
+     * Create a response with the current OpenAI Responses API.
+     *
+     * @param array<string,mixed> $opts
+     * @return array<string,mixed>
+     * @throws OpenAIRequestException
+     */
+    public function response(array $opts): array
+    {
+        $payload = $opts;
+        $payload['model'] = $payload['model'] ?? config('openai.defaults.model', 'gpt-4.1-mini');
 
-    //==============================================================================
-    // 1) Stateless Chat Completions + Helpers
-    //==============================================================================
+        if (!isset($payload['input'])) {
+            if (isset($payload['messages'])) {
+                $payload['input'] = $payload['messages'];
+                unset($payload['messages']);
+            } else {
+                throw new Exception('Missing "input" for response().');
+            }
+        }
+
+        if (isset($payload['max_tokens']) && !isset($payload['max_output_tokens'])) {
+            $payload['max_output_tokens'] = $payload['max_tokens'];
+            unset($payload['max_tokens']);
+        }
+
+        $apiKey = $payload['api_key'] ?? null;
+        $retries = isset($payload['retries']) && is_int($payload['retries']) ? $payload['retries'] : $this->retries;
+        unset($payload['api_key'], $payload['retries']);
+
+        return $this->createResponse($payload, is_string($apiKey) ? $apiKey : null, $retries);
+    }
 
     /**
-     * Shortcut for a chat completion.
+     * @param array<string,mixed> $payload
+     * @return array<string,mixed>
+     * @throws OpenAIRequestException
+     */
+    public function createResponse(array $payload, ?string $apiKey = null, ?int $retries = null): array
+    {
+        return $this->sendRequestStrict(
+            $apiKey ?: $this->getDefaultKey(),
+            $this->baseUrlResponses,
+            $payload,
+            $retries ?? $this->retries
+        );
+    }
+
+    /**
+     * @return array<string,mixed>
+     * @throws OpenAIRequestException
+     */
+    public function getResponse(string $responseId, ?string $apiKey = null): array
+    {
+        return $this->sendGetRequestStrict(
+            $apiKey ?: $this->getDefaultKey(),
+            "{$this->baseUrlResponses}/{$responseId}"
+        );
+    }
+
+    /**
+     * @return array<string,mixed>
+     * @throws OpenAIRequestException
+     */
+    public function retrieveResponse(string $responseId, ?string $apiKey = null): array
+    {
+        return $this->getResponse($responseId, $apiKey);
+    }
+
+    /**
+     * @return array<string,mixed>
+     * @throws OpenAIRequestException
+     */
+    public function cancelResponse(string $responseId, ?string $apiKey = null): array
+    {
+        return $this->sendRequestStrict(
+            $apiKey ?: $this->getDefaultKey(),
+            "{$this->baseUrlResponses}/{$responseId}/cancel",
+            [],
+            $this->retries
+        );
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $items
+     * @throws OpenAIRequestException
+     */
+    public function createConversation(array $items = [], ?string $apiKey = null): string
+    {
+        $payload = [];
+
+        if ($items !== []) {
+            $payload['items'] = $items;
+        }
+
+        $resp = $this->sendRequestStrict(
+            $apiKey ?: $this->getDefaultKey(),
+            $this->baseUrlConversations,
+            $payload,
+            $this->retries
+        );
+
+        return $resp['id'] ?? throw new Exception('createConversation: no id returned');
+    }
+
+    /**
+     * @param array<string,mixed> $item
+     * @return array<string,mixed>
+     * @throws OpenAIRequestException
+     */
+    public function addConversationItem(string $conversationId, array $item, ?string $apiKey = null): array
+    {
+        return $this->sendRequestStrict(
+            $apiKey ?: $this->getDefaultKey(),
+            "{$this->baseUrlConversations}/{$conversationId}/items",
+            $item,
+            $this->retries
+        );
+    }
+
+    /**
+     * @return array<string,mixed>
+     * @throws OpenAIRequestException
+     */
+    public function listConversationItems(string $conversationId, int $limit = 100, ?string $apiKey = null): array
+    {
+        return $this->sendGetRequestStrict(
+            $apiKey ?: $this->getDefaultKey(),
+            "{$this->baseUrlConversations}/{$conversationId}/items?limit={$limit}"
+        );
+    }
+
+    /**
+     * Legacy Chat Completions shortcut.
      *
-     * @param  array<string,mixed> $opts {
-     *     @type array<int,array{role:string,content:string|array}> $messages    messages list
-     *     @type string|null    $model       model name
-     *     @type float          $temperature temperature
-     *     @type int            $max_tokens  max tokens
-     *     @type float          $top_p       nucleus sampling
-     *     @type array|null     $response_format response format
-     *     @type string|null    $api_key     override key
-     *     @type int|null       $retries     override retries
-     * }
-     * @return array|null         OpenAI JSON response or null
+     * @param array<string,mixed> $opts
+     * @return array<string,mixed>|null
      * @throws Exception on missing params/key
      */
     public function completion(array $opts): ?array
     {
-        // fill defaults from config/openai.php
         $defaults = [
-            'model'           => config('openai.defaults.model', 'gpt-4o-mini'),
-            'temperature'     => config('openai.defaults.temperature', 0.7),
-            'max_tokens'      => config('openai.defaults.max_tokens', 1000),
-            'top_p'           => config('openai.defaults.top_p', 1.0),
+            'model' => config('openai.defaults.model', 'gpt-4.1-mini'),
+            'temperature' => config('openai.defaults.temperature', 0.7),
+            'max_tokens' => config('openai.defaults.max_tokens', 1000),
+            'top_p' => config('openai.defaults.top_p', 1.0),
             'response_format' => null,
-            'api_key'         => (!empty($this->projectApiKey) ? $this->projectApiKey : $this->keyCompletions),
-            'retries'         => $this->retries,
+            'api_key' => $this->getCompletionKey(),
+            'retries' => $this->retries,
         ];
         $cfg = array_merge($defaults, $opts);
 
-        if (empty($cfg['messages']) || ! is_array($cfg['messages'])) {
+        if (empty($cfg['messages']) || !is_array($cfg['messages'])) {
             throw new Exception('Missing or invalid "messages" for completion().');
         }
 
         $params = [
-            'type'        => 'completion',
-            'messages'    => $cfg['messages'],
-            'model'       => $cfg['model'],
+            'type' => 'completion',
+            'messages' => $cfg['messages'],
+            'model' => $cfg['model'],
             'temperature' => $cfg['temperature'],
-            'max_tokens'  => $cfg['max_tokens'],
-            'top_p'       => $cfg['top_p'],
-            'api_key'     => $cfg['api_key'],
-            'retries'     => $cfg['retries'],
+            'max_tokens' => $cfg['max_tokens'],
+            'top_p' => $cfg['top_p'],
+            'api_key' => $cfg['api_key'],
+            'retries' => $cfg['retries'],
         ];
 
         if (!empty($cfg['response_format'])) {
@@ -168,125 +285,108 @@ class OpenAIService
         return $this->requestOpenAI($params);
     }
 
-        /**
+    /**
      * Generate images via OpenAI Images API.
      *
-     * @param  array<string,mixed> $opts {
-     *     @type string         $prompt            Required. Text prompt for the image.
-     *     @type string|null     $model            Optional. Defaults to 'gpt-image-1'.
-     *     @type int|null        $n                Optional. Defaults to 1.
-     *     @type string|null     $size             Optional. Defaults to '1024x1024'.
-     *     @type string|null     $response_format  Optional. 'url' or 'b64_json'. Defaults to 'url'.
-     *     @type string|null     $api_key          Optional. Override key (uses completions key by default).
-     *     @type int|null        $retries          Optional. Override retries.
-     * }
-     * @return array|null         OpenAI JSON response or null
-     * @throws Exception on missing params
+     * GPT image models do not default to response_format=url. The response format is only sent when explicitly provided.
+     *
+     * @param array<string,mixed> $opts
+     * @return array<string,mixed>|null
+     * @throws Exception
      */
     public function image(array $opts): ?array
     {
         $cfg = array_merge([
-            'model'            => 'gpt-image-1',   // default model for images
-            'prompt'           => '',
-            'n'                => 1,
-            'size'             => '1024x1024',
-            'response_format'  => 'url',
-            'api_key'          => null,
-            'retries'          => null,
+            'model' => config('openai.defaults.image_model', 'gpt-image-1'),
+            'prompt' => '',
+            'n' => 1,
+            'size' => '1024x1024',
+            'response_format' => null,
+            'output_format' => null,
+            'quality' => null,
+            'background' => null,
+            'api_key' => null,
+            'retries' => null,
         ], $opts);
-    
+
         if (!is_string($cfg['prompt']) || $cfg['prompt'] === '') {
             throw new Exception('Missing or invalid "prompt" for image().');
         }
-    
-        return $this->requestOpenAI([
-            'type'             => 'images',
-            'model'            => $cfg['model'],
-            'prompt'           => $cfg['prompt'],
-            'n'                => $cfg['n'],
-            'size'             => $cfg['size'],
-            'response_format'  => $cfg['response_format'],
-            'api_key'          => $cfg['api_key'],
-            'retries'          => $cfg['retries'],
-        ]);
+
+        $payload = [
+            'type' => 'images',
+            'model' => $cfg['model'],
+            'prompt' => $cfg['prompt'],
+            'n' => $cfg['n'],
+            'size' => $cfg['size'],
+            'api_key' => $cfg['api_key'],
+            'retries' => $cfg['retries'],
+        ];
+
+        foreach (['response_format', 'output_format', 'quality', 'background'] as $optionalField) {
+            if ($cfg[$optionalField] !== null) {
+                $payload[$optionalField] = $cfg[$optionalField];
+            }
+        }
+
+        return $this->requestOpenAI($payload);
     }
 
     /**
-     * Core generic requester for non-thread types.
+     * Core generic requester for legacy non-thread types.
      *
-     * @param  array<string,mixed> $params {
-     *     @type string        $type     one of: completion, embedding, moderation, images
-     *     @type string|null   $api_key  override API key
-     *     @type int|null      $retries  override retries
-     *     // plus payload fields: messages, input, prompt, etc.
-     * }
-     * @return array|null               JSON response or null
-     * @throws Exception on missing key or unknown type
+     * @param array<string,mixed> $params
+     * @return array<string,mixed>|null
+     * @throws Exception
      */
     public function requestOpenAI(array $params): ?array
     {
-        $type   = $params['type'] ?? 'completion';
+        $type = $params['type'] ?? 'completion';
         $apiKey = $params['api_key']
             ?? $this->projectApiKey
             ?? match ($type) {
-                'completion', 'images'     => $this->keyCompletions,
-                'embedding', 'moderation'  => $this->keyAssistants,
-                default                    => throw new Exception("Unknown request type \"$type\"."),
+                'response' => $this->getDefaultKey(),
+                'completion', 'images' => $this->getCompletionKey(),
+                'embedding', 'moderation' => $this->getAssistantKey(),
+                default => throw new Exception("Unknown request type \"$type\"."),
             };
 
         if (empty($apiKey)) {
             throw new Exception("Missing API key for type \"$type\".");
         }
 
-        $retries = is_int($params['retries'] ?? null)
-            ? $params['retries']
-            : $this->retries;
+        $retries = is_int($params['retries'] ?? null) ? $params['retries'] : $this->retries;
 
-        // remove internals
         unset($params['type'], $params['api_key'], $params['retries']);
 
-        // choose endpoint
-        switch ($type) {
-            case 'completion':
-                $url = $this->baseUrlCompletions; break;
-            case 'embedding':
-                $url = $this->baseUrlEmbeddings; break;
-            case 'moderation':
-                $url = $this->baseUrlModerations; break;
-            case 'images':
-                $url = $this->baseUrlImages; break;
-            default:
-                throw new Exception("Unknown type \"$type\".");
-        }
+        $url = match ($type) {
+            'response' => $this->baseUrlResponses,
+            'completion' => $this->baseUrlCompletions,
+            'embedding' => $this->baseUrlEmbeddings,
+            'moderation' => $this->baseUrlModerations,
+            'images' => $this->baseUrlImages,
+            default => throw new Exception("Unknown type \"$type\"."),
+        };
 
-        return $this->sendRequest($apiKey, $url, $params, $retries);
+        return $this->sendRequest((string) $apiKey, $url, $params, $retries);
     }
 
-    //==============================================================================
-    // 2) Stateful Threads API Helpers (Assistants + Tools)
-    //==============================================================================
-
     /**
-     * returns an API key for the OpenAI assistant.
      * @return \Illuminate\Config\Repository|\Illuminate\Foundation\Application|mixed|object|string|null
      */
-    private function _getAssistantKey() {
-        return (!empty($this->projectApiKey)
-            ? $this->projectApiKey
-            : $this->keyAssistants);
+    private function _getAssistantKey()
+    {
+        return $this->getAssistantKey();
     }
 
     /**
-     * Create a new assistant Thread.
-     *
-     * @return string               New thread_id
-     * @throws Exception on HTTP error
+     * @deprecated Use response() or createConversation() instead. Assistants v2 Threads/Runs are legacy compatibility methods.
      */
     public function createThread(): string
     {
         $resp = Http::withToken($this->_getAssistantKey())
             ->withHeaders(self::ASSISTANTS_V2_HEADER)
-            ->post($this->baseUrlThreads, (object)[])
+            ->post($this->baseUrlThreads, (object) [])
             ->throw()
             ->json();
 
@@ -294,20 +394,18 @@ class OpenAIService
     }
 
     /**
-     * Append one or more messages to an existing thread.
-     *
-     * @param string $threadId
      * @param array<int,array{role:string,content:string|array}> $messages
+     * @deprecated Use createConversation() and addConversationItem() instead.
      */
     public function appendMessageToThread(string $threadId, array $messages): void
     {
         foreach ($messages as $msg) {
             $payload = [
-                'role'    => $msg['role'],
+                'role' => $msg['role'],
                 'content' => $this->formatContent($msg['content']),
             ];
 
-            $resp = Http::withToken($this->_getAssistantKey())
+            Http::withToken($this->_getAssistantKey())
                 ->withHeaders(self::ASSISTANTS_V2_HEADER)
                 ->post("{$this->baseUrlThreads}/{$threadId}/messages", $payload)
                 ->throw();
@@ -315,19 +413,15 @@ class OpenAIService
     }
 
     /**
-     * Normalize your content into the shape the API expects.
-     *
-     * @param  string|array  $content
-     * @return string|array
+     * @param string|array<int,array<string,mixed>> $content
+     * @return string|array<int,array<string,mixed>>
      */
     private function formatContent(string|array $content): string|array
     {
-        // if it's already an array of structured parts, just trust it
         if (is_array($content) && isset($content[0]['type'])) {
             return $content;
         }
 
-        // otherwise wrap a simple string into the array-of-text-parts form
         return [
             [
                 'type' => 'text',
@@ -336,14 +430,6 @@ class OpenAIService
         ];
     }
 
-    /**
-     * Upload a file to OpenAI.
-     *
-     * @param  string  $filePath   Absolute path to the local file
-     * @param  string  $purpose    e.g. 'vision', 'assistants', 'fine-tune'
-     * @return string               The OpenAI file_id
-     * @throws Exception
-     */
     public function uploadFile(string $filePath, string $purpose = 'vision'): string
     {
         if (!file_exists($filePath)) {
@@ -362,14 +448,7 @@ class OpenAIService
     }
 
     /**
-     * Start a run on a thread (with optional tools and response_format).
-     *
-     * @param string $threadId
-     * @param string $assistantId
-     * @param string $model
-     * @param array  $tools
-     * @param array|null $responseFormat e.g. ['type' => 'json_object'] or Structured Output schema
-     * @return string               run_id
+     * @deprecated Use response() instead.
      */
     public function startRun(
         string $threadId,
@@ -379,10 +458,10 @@ class OpenAIService
         ?array $responseFormat = null
     ): string {
         $payload = [
-            'assistant_id'    => $assistantId,
-            'model'           => $model,
-            'tools'           => $tools,
-            'tool_choice'     => 'auto',
+            'assistant_id' => $assistantId,
+            'model' => $model,
+            'tools' => $tools,
+            'tool_choice' => 'auto',
         ];
 
         if ($responseFormat) {
@@ -399,11 +478,9 @@ class OpenAIService
     }
 
     /**
-     * Poll for tool calls, execute handlers, submit outputs.
-     *
-     * @param string $threadId
-     * @param string $runId
      * @param array<string,callable> $toolHandlers
+     * @return array<string,mixed>
+     * @deprecated Use response() tool calling instead.
      */
     public function pollAndSubmitToolCalls(string $threadId, string $runId, array $toolHandlers = []): array
     {
@@ -453,26 +530,16 @@ class OpenAIService
             if (in_array($status, ['cancelled', 'expired', 'failed'], true)) {
                 throw new \RuntimeException("Run failed or was cancelled: $status");
             }
-
         } while (($status ?? '') !== 'completed');
 
         return $resp;
     }
 
-
-
     /**
-     * Poll until the run is completed, handle tool calls if needed.
-     *
-     * @param string $threadId
-     * @param string $runId
      * @param array<string,callable> $toolHandlers
-     * @param string|null $assistantId
-     * @param string|null $model
-     * @param array $tools
-     * @param array|null $responseFormat
-     * @return array
-     * @throws OpenAIRunFailedException|\RuntimeException on failure or timeout
+     * @return array<string,mixed>
+     * @throws OpenAIRunFailedException|\RuntimeException
+     * @deprecated Use response() instead.
      */
     public function pollUntilRunComplete(
         string $threadId,
@@ -482,13 +549,12 @@ class OpenAIService
         ?string $model = null,
         array $tools = [],
         ?array $responseFormat = null
-    ): array
-    {
+    ): array {
         $this->pollResponse = [];
         $attempts = 0;
-        $maxAttempts = 100; // Increased from 60
+        $maxAttempts = 100;
         $retryAttempts = 0;
-        $maxRetryAttempts = 5; // Increased from 3
+        $maxRetryAttempts = 5;
 
         do {
             sleep(3);
@@ -502,7 +568,6 @@ class OpenAIService
             $status = $resp['status'] ?? 'unknown';
 
             if ($status === 'requires_action' && !empty($toolHandlers)) {
-                // Tool-Calls delegieren
                 return $this->pollAndSubmitToolCalls($threadId, $runId, $toolHandlers);
             }
 
@@ -539,17 +604,16 @@ class OpenAIService
                     Log::warning("OpenAI run transient error ($errorCode), restarting run in {$backoff}s... (Attempt $retryAttempts/$maxRetryAttempts)", $context);
                     sleep($backoff);
 
-                    // If we have the necessary info, start a NEW run instead of just polling the failed one
                     $aId = $resp['assistant_id'] ?? $assistantId;
                     $m = $resp['model'] ?? $model;
 
                     if ($aId && $m) {
                         try {
                             $runId = $this->startRun($threadId, $aId, $m, $tools, $responseFormat);
-                            $attempts = 0; // Reset polling attempts for the new run
+                            $attempts = 0;
                             continue;
                         } catch (Exception $e) {
-                            Log::error("Failed to restart OpenAI run: " . $e->getMessage(), $context);
+                            Log::error('Failed to restart OpenAI run: ' . $e->getMessage(), $context);
                         }
                     }
                 }
@@ -560,24 +624,18 @@ class OpenAIService
 
             $this->pollResponse = $resp;
             $attempts++;
-
         } while ($status !== 'completed' && $attempts < $maxAttempts);
 
         if ($status !== 'completed') {
-            throw new \RuntimeException("Polling timeout: Run did not complete in time.");
+            throw new \RuntimeException('Polling timeout: Run did not complete in time.');
         }
 
         return $this->pollResponse;
     }
 
-
-
     /**
-     * Fetch and normalize all messages from a thread.
-     *
-     * @param  string  $threadId
-     * @param  int     $limit     Anzahl der Nachrichten, die maximal abgefragt werden sollen
-     * @return array<int,array{role:string,content:string}>
+     * @return array<int,array<string,mixed>>
+     * @deprecated Use listConversationItems() instead.
      */
     public function getThreadMessages(string $threadId, int $limit = 100): array
     {
@@ -590,87 +648,142 @@ class OpenAIService
             ->throw()
             ->json();
 
-        $raw = $resp['data'] ?? [];
-
-        return $raw;
-
-        /*
-        // Mappe jedes Roh-Objekt auf ['role'=>string,'content'=>string]
-        return array_map(
-            function (array $msg): array {
-                $role = $msg['author']['role'] ?? 'assistant';
-                $parts = $msg['content']['parts'] ?? [];
-                $content = implode("\n", $parts);
-                return ['role' => $role, 'content' => $content];
-            },
-            $raw
-        );
-        */
+        return $resp['data'] ?? [];
     }
 
     /**
-     * Convenience: run the entire thread flow in one go.
-     *
-     * @param string $assistantId
      * @param array<int,array{role:string,content:string}> $messages
-     * @param string $model
-     * @param array  $tools
+     * @param array<int,mixed> $tools
      * @param array<string,callable> $toolHandlers
-     * @return array<int,array{role:string,content:string}>
+     * @return array<int,array<string,mixed>>
+     * @deprecated Use response() instead.
      */
     public function runThread(
         string $assistantId,
-        array  $messages,
+        array $messages,
         string $model,
-        array  $tools = [],
-        array  $toolHandlers = []
+        array $tools = [],
+        array $toolHandlers = []
     ): array {
         $tId = $this->createThread();
         $this->appendMessageToThread($tId, $messages);
         $rId = $this->startRun($tId, $assistantId, $model, $tools);
         $this->pollUntilRunComplete($tId, $rId, $toolHandlers, $assistantId, $model, $tools);
+
         return $this->getThreadMessages($tId);
     }
 
-    //==============================================================================
-    // 3) Internal HTTP helper (used by completion & other)
-    //==============================================================================
+    private function getDefaultKey(): string
+    {
+        return $this->projectApiKey ?: $this->apiKey ?: $this->keyCompletions ?: $this->keyAssistants;
+    }
+
+    private function getCompletionKey(): string
+    {
+        return $this->projectApiKey ?: $this->keyCompletions ?: $this->apiKey;
+    }
+
+    private function getAssistantKey(): string
+    {
+        return $this->projectApiKey ?: $this->keyAssistants ?: $this->apiKey;
+    }
 
     /**
-     * Low-level HTTP POST with retry & timeout.
+     * Low-level HTTP POST with retry and legacy nullable failure behavior.
      *
-     * @param string $apiKey
-     * @param string $url
-     * @param array  $payload
-     * @param int    $retries
-     * @return array|null
+     * @param array<string,mixed> $payload
+     * @return array<string,mixed>|null
      */
     private function sendRequest(string $apiKey, string $url, array $payload, int $retries): ?array
     {
+        try {
+            return $this->sendRequestStrict($apiKey, $url, $payload, $retries);
+        } catch (OpenAIRequestException $e) {
+            Log::error('OpenAI API Error', $e->context());
+            return null;
+        }
+    }
+
+    /**
+     * @param array<string,mixed> $payload
+     * @return array<string,mixed>
+     * @throws OpenAIRequestException
+     */
+    private function sendRequestStrict(string $apiKey, string $url, array $payload, int $retries): array
+    {
+        $lastException = null;
+
         for ($i = 0; $i < $retries; $i++) {
             try {
                 $resp = Http::timeout($this->timeout)
                     ->withHeaders([
                         'Authorization' => "Bearer {$apiKey}",
-                        'Content-Type'  => 'application/json',
+                        'Content-Type' => 'application/json',
                     ])
                     ->post($url, $payload);
 
                 if ($resp->successful()) {
-                    return $resp->json();
+                    return $resp->json() ?? [];
                 }
 
-                Log::error('OpenAI API Error', [
+                $context = [
                     'status' => $resp->status(),
-                    'body'   => $resp->body(),
-                ]);
+                    'body' => $resp->body(),
+                    'url' => $url,
+                    'request_id' => $resp->header('x-request-id'),
+                    'attempt' => $i + 1,
+                ];
+
+                Log::warning('OpenAI API request failed', $context);
+                $lastException = new OpenAIRequestException('OpenAI API request failed.', $context, $resp->status());
             } catch (Exception $e) {
-                Log::warning('OpenAI HTTP Exception', [
+                $context = [
+                    'url' => $url,
                     'message' => $e->getMessage(),
-                ]);
-                sleep(1);
+                    'attempt' => $i + 1,
+                ];
+
+                Log::warning('OpenAI HTTP exception', $context);
+                $lastException = new OpenAIRequestException('OpenAI HTTP exception.', $context, 0, $e);
             }
+
+            sleep(1);
         }
-        return null;
+
+        throw $lastException ?? new OpenAIRequestException('OpenAI request failed without response.', ['url' => $url]);
+    }
+
+    /**
+     * @return array<string,mixed>
+     * @throws OpenAIRequestException
+     */
+    private function sendGetRequestStrict(string $apiKey, string $url): array
+    {
+        try {
+            $resp = Http::timeout($this->timeout)
+                ->withHeaders([
+                    'Authorization' => "Bearer {$apiKey}",
+                    'Content-Type' => 'application/json',
+                ])
+                ->get($url);
+
+            if ($resp->successful()) {
+                return $resp->json() ?? [];
+            }
+
+            throw new OpenAIRequestException('OpenAI API GET request failed.', [
+                'status' => $resp->status(),
+                'body' => $resp->body(),
+                'url' => $url,
+                'request_id' => $resp->header('x-request-id'),
+            ], $resp->status());
+        } catch (OpenAIRequestException $e) {
+            throw $e;
+        } catch (Exception $e) {
+            throw new OpenAIRequestException('OpenAI HTTP GET exception.', [
+                'url' => $url,
+                'message' => $e->getMessage(),
+            ], 0, $e);
+        }
     }
 }
