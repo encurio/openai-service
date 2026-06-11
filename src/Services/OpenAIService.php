@@ -11,18 +11,8 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
-/**
- * Universal OpenAI Service.
- *
- * The Responses API is the primary API for new implementations.
- * completion() is intentionally an alias to the Responses API.
- * Use chatCompletion() only when a project explicitly needs the legacy Chat Completions endpoint.
- */
 class OpenAIService
 {
-    /**
-     * Header for legacy Assistants v2 thread calls.
-     */
     private const ASSISTANTS_V2_HEADER = [
         'OpenAI-Beta' => 'assistants=v2',
     ];
@@ -49,9 +39,6 @@ class OpenAIService
      */
     private $pollResponse = '';
 
-    /**
-     * @throws Exception if no API key is configured
-     */
     public function __construct()
     {
         $this->apiKey = (string) config('openai.api_key', '');
@@ -65,38 +52,14 @@ class OpenAIService
         $this->retries = (int) config('openai.retries', 3);
         $this->timeout = (int) config('openai.timeout', 60);
 
-        $this->baseUrlResponses = (string) config(
-            'openai.endpoints.responses',
-            'https://api.openai.com/v1/responses'
-        );
-        $this->baseUrlConversations = (string) config(
-            'openai.endpoints.conversations',
-            'https://api.openai.com/v1/conversations'
-        );
-        $this->baseUrlCompletions = (string) config(
-            'openai.endpoints.completions',
-            'https://api.openai.com/v1/chat/completions'
-        );
-        $this->baseUrlEmbeddings = (string) config(
-            'openai.endpoints.embeddings',
-            'https://api.openai.com/v1/embeddings'
-        );
-        $this->baseUrlModerations = (string) config(
-            'openai.endpoints.moderations',
-            'https://api.openai.com/v1/moderations'
-        );
-        $this->baseUrlImages = (string) config(
-            'openai.endpoints.images',
-            'https://api.openai.com/v1/images/generations'
-        );
-        $this->baseUrlThreads = (string) config(
-            'openai.endpoints.threads',
-            'https://api.openai.com/v1/threads'
-        );
-        $this->baseUrlFiles = (string) config(
-            'openai.endpoints.files',
-            'https://api.openai.com/v1/files'
-        );
+        $this->baseUrlResponses = (string) config('openai.endpoints.responses', 'https://api.openai.com/v1/responses');
+        $this->baseUrlConversations = (string) config('openai.endpoints.conversations', 'https://api.openai.com/v1/conversations');
+        $this->baseUrlCompletions = (string) config('openai.endpoints.completions', 'https://api.openai.com/v1/chat/completions');
+        $this->baseUrlEmbeddings = (string) config('openai.endpoints.embeddings', 'https://api.openai.com/v1/embeddings');
+        $this->baseUrlModerations = (string) config('openai.endpoints.moderations', 'https://api.openai.com/v1/moderations');
+        $this->baseUrlImages = (string) config('openai.endpoints.images', 'https://api.openai.com/v1/images/generations');
+        $this->baseUrlThreads = (string) config('openai.endpoints.threads', 'https://api.openai.com/v1/threads');
+        $this->baseUrlFiles = (string) config('openai.endpoints.files', 'https://api.openai.com/v1/files');
     }
 
     public function setProjectApiKey(string $apiKey): void
@@ -113,16 +76,14 @@ class OpenAIService
     }
 
     /**
-     * Create a response with the current OpenAI Responses API.
+     * Create a raw Responses API response.
      *
      * @param array<string,mixed> $opts
      * @return array<string,mixed>
-     * @throws OpenAIRequestException
      */
     public function response(array $opts): array
     {
         $payload = $this->normalizeResponseOptions($opts);
-
         $apiKey = $payload['api_key'] ?? null;
         $retries = isset($payload['retries']) && is_int($payload['retries']) ? $payload['retries'] : $this->retries;
         unset($payload['api_key'], $payload['retries']);
@@ -131,11 +92,10 @@ class OpenAIService
     }
 
     /**
-     * completion() is a compatibility alias for Responses API.
+     * Compatibility alias: uses Responses API but returns a Chat-Completions-compatible choices mirror.
      *
      * @param array<string,mixed> $opts
      * @return array<string,mixed>|null
-     * @throws Exception
      */
     public function completion(array $opts): ?array
     {
@@ -143,12 +103,10 @@ class OpenAIService
     }
 
     /**
-     * Explicit legacy Chat Completions call.
-     * Use this only when a consuming project truly needs /v1/chat/completions.
+     * Explicit legacy /v1/chat/completions call.
      *
      * @param array<string,mixed> $opts
      * @return array<string,mixed>|null
-     * @throws Exception
      */
     public function chatCompletion(array $opts): ?array
     {
@@ -188,7 +146,6 @@ class OpenAIService
     /**
      * @param array<string,mixed> $payload
      * @return array<string,mixed>
-     * @throws OpenAIRequestException
      */
     public function createResponse(array $payload, ?string $apiKey = null, ?int $retries = null): array
     {
@@ -202,7 +159,6 @@ class OpenAIService
 
     /**
      * @return array<string,mixed>
-     * @throws OpenAIRequestException
      */
     public function getResponse(string $responseId, ?string $apiKey = null): array
     {
@@ -214,7 +170,6 @@ class OpenAIService
 
     /**
      * @return array<string,mixed>
-     * @throws OpenAIRequestException
      */
     public function retrieveResponse(string $responseId, ?string $apiKey = null): array
     {
@@ -223,7 +178,6 @@ class OpenAIService
 
     /**
      * @return array<string,mixed>
-     * @throws OpenAIRequestException
      */
     public function cancelResponse(string $responseId, ?string $apiKey = null): array
     {
@@ -237,7 +191,6 @@ class OpenAIService
 
     /**
      * @param array<int,array<string,mixed>> $items
-     * @throws OpenAIRequestException
      */
     public function createConversation(array $items = [], ?string $apiKey = null): string
     {
@@ -260,7 +213,6 @@ class OpenAIService
     /**
      * @param array<string,mixed> $item
      * @return array<string,mixed>
-     * @throws OpenAIRequestException
      */
     public function addConversationItem(string $conversationId, array $item, ?string $apiKey = null): array
     {
@@ -274,7 +226,6 @@ class OpenAIService
 
     /**
      * @return array<string,mixed>
-     * @throws OpenAIRequestException
      */
     public function listConversationItems(string $conversationId, int $limit = 100, ?string $apiKey = null): array
     {
@@ -285,13 +236,8 @@ class OpenAIService
     }
 
     /**
-     * Generate images via OpenAI Images API.
-     *
-     * GPT image models do not default to response_format=url. The response format is only sent when explicitly provided.
-     *
      * @param array<string,mixed> $opts
      * @return array<string,mixed>|null
-     * @throws Exception
      */
     public function image(array $opts): ?array
     {
@@ -333,13 +279,12 @@ class OpenAIService
 
     /**
      * Core generic requester.
-     *
-     * type=completion is intentionally mapped to the Responses API.
-     * type=chat_completion is the explicit legacy Chat Completions endpoint.
+     * type=completion uses Responses API plus legacy choices mirror.
+     * type=response uses raw Responses API.
+     * type=chat_completion uses the legacy Chat Completions endpoint.
      *
      * @param array<string,mixed> $params
      * @return array<string,mixed>|null
-     * @throws Exception
      */
     public function requestOpenAI(array $params): ?array
     {
@@ -385,18 +330,19 @@ class OpenAIService
     /**
      * @param array<string,mixed> $opts
      * @return array<string,mixed>
-     * @throws OpenAIRequestException
      */
     private function responseFromCompletionOptions(array $opts): array
     {
         $payload = $this->normalizeResponseOptions($opts);
 
-        return $this->sendRequestStrict(
+        $response = $this->sendRequestStrict(
             isset($opts['api_key']) && is_string($opts['api_key']) ? $opts['api_key'] : $this->getDefaultKey(),
             $this->baseUrlResponses,
             $payload,
             isset($opts['retries']) && is_int($opts['retries']) ? $opts['retries'] : $this->retries
         );
+
+        return $this->withLegacyChatCompletionShape($response);
     }
 
     /**
@@ -436,10 +382,7 @@ class OpenAIService
         }
         unset($payload['response_format']);
 
-        return array_filter(
-            $payload,
-            static fn($value): bool => $value !== null
-        );
+        return array_filter($payload, static fn($value): bool => $value !== null);
     }
 
     /**
@@ -547,6 +490,64 @@ class OpenAIService
     }
 
     /**
+     * @param array<string,mixed> $response
+     * @return array<string,mixed>
+     */
+    private function withLegacyChatCompletionShape(array $response): array
+    {
+        if (isset($response['choices'][0]['message']['content'])) {
+            return $response;
+        }
+
+        $content = $this->extractResponseText($response);
+
+        if ($content === null) {
+            return $response;
+        }
+
+        $response['choices'] = [[
+            'index' => 0,
+            'message' => [
+                'role' => 'assistant',
+                'content' => $content,
+            ],
+            'finish_reason' => $response['status'] ?? null,
+        ]];
+
+        return $response;
+    }
+
+    /**
+     * @param array<string,mixed> $response
+     */
+    private function extractResponseText(array $response): ?string
+    {
+        if (isset($response['output_text']) && is_string($response['output_text'])) {
+            return $response['output_text'];
+        }
+
+        $parts = [];
+
+        foreach (($response['output'] ?? []) as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            foreach (($item['content'] ?? []) as $contentPart) {
+                if (!is_array($contentPart)) {
+                    continue;
+                }
+
+                if (isset($contentPart['text']) && is_string($contentPart['text'])) {
+                    $parts[] = $contentPart['text'];
+                }
+            }
+        }
+
+        return $parts !== [] ? implode("\n", $parts) : null;
+    }
+
+    /**
      * @return \Illuminate\Config\Repository|\Illuminate\Foundation\Application|mixed|object|string|null
      */
     private function _getAssistantKey()
@@ -597,12 +598,10 @@ class OpenAIService
             return $content;
         }
 
-        return [
-            [
-                'type' => 'text',
-                'text' => (string) $content,
-            ],
-        ];
+        return [[
+            'type' => 'text',
+            'text' => (string) $content,
+        ]];
     }
 
     public function uploadFile(string $filePath, string $purpose = 'vision'): string
@@ -613,9 +612,7 @@ class OpenAIService
 
         $resp = Http::withToken($this->_getAssistantKey())
             ->attach('file', file_get_contents($filePath), basename($filePath))
-            ->post($this->baseUrlFiles, [
-                'purpose' => $purpose,
-            ])
+            ->post($this->baseUrlFiles, ['purpose' => $purpose])
             ->throw()
             ->json();
 
@@ -625,13 +622,8 @@ class OpenAIService
     /**
      * @deprecated Use response() instead.
      */
-    public function startRun(
-        string $threadId,
-        string $assistantId,
-        string $model,
-        array $tools = [],
-        ?array $responseFormat = null
-    ): string {
+    public function startRun(string $threadId, string $assistantId, string $model, array $tools = [], ?array $responseFormat = null): string
+    {
         $payload = [
             'assistant_id' => $assistantId,
             'model' => $model,
@@ -833,13 +825,8 @@ class OpenAIService
      * @return array<int,array<string,mixed>>
      * @deprecated Use response() instead.
      */
-    public function runThread(
-        string $assistantId,
-        array $messages,
-        string $model,
-        array $tools = [],
-        array $toolHandlers = []
-    ): array {
+    public function runThread(string $assistantId, array $messages, string $model, array $tools = [], array $toolHandlers = []): array
+    {
         $tId = $this->createThread();
         $this->appendMessageToThread($tId, $messages);
         $rId = $this->startRun($tId, $assistantId, $model, $tools);
@@ -864,8 +851,6 @@ class OpenAIService
     }
 
     /**
-     * Low-level HTTP POST with retry and legacy nullable failure behavior.
-     *
      * @param array<string,mixed> $payload
      * @return array<string,mixed>|null
      */
@@ -882,7 +867,6 @@ class OpenAIService
     /**
      * @param array<string,mixed> $payload
      * @return array<string,mixed>
-     * @throws OpenAIRequestException
      */
     private function sendRequestStrict(string $apiKey, string $url, array $payload, int $retries): array
     {
@@ -930,7 +914,6 @@ class OpenAIService
 
     /**
      * @return array<string,mixed>
-     * @throws OpenAIRequestException
      */
     private function sendGetRequestStrict(string $apiKey, string $url): array
     {
